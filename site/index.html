@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rumicos — an experimental x86-64 kernel in Rust</title>
+<meta name="description" content="Rumicos is an experimental x86-64 operating system kernel written in Rust (no_std). Download the ready-to-boot build or the source.">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div id="page">
+
+<div id="banner">
+  <h1>Rumicos</h1>
+  <div class="sub">An experimental x86-64 operating system kernel, written in Rust.</div>
+</div>
+
+<div id="nav">
+  <a href="#about">About</a> |
+  <a href="#download">Download</a> |
+  <a href="#build">Building</a> |
+  <a href="#miscompile">Compiler bug</a> |
+  <a href="#donate">Donate</a> |
+  <a href="https://github.com/ScioFuturum/rumicos">GitHub</a> |
+  <a href="./ru/">Русский</a>
+</div>
+
+<h2 id="about">About</h2>
+
+<p>Rumicos is a small, from-scratch Unix-like kernel for x86-64. It is written in
+Rust (<tt>no_std</tt>, no libc) and is booted by
+<a href="https://github.com/limine-bootloader/limine">Limine</a> over UEFI.
+It is a hobby and research project, not a production system.</p>
+
+<p>Everything listed below is verified by booting the real kernel in QEMU, not only
+by unit tests. The current build passes <b>273</b> host tests and <b>19 of 19</b>
+live boot checks.</p>
+
+<ul>
+  <li><b>Processes</b> — copy-on-write <tt>fork()</tt>, <tt>execve()</tt> loading real ELF
+      binaries, <tt>clone()</tt> (CLONE_VM threads)</li>
+  <li><b>Virtual memory</b> — 4-level paging, <tt>mmap</tt>/<tt>munmap</tt>, demand-zero and
+      file-backed pages, copy-on-write faults</li>
+  <li><b>Signals</b> — <tt>sigaction</tt>, <tt>kill</tt>, delivery on syscall and interrupt
+      return, a real <tt>sigreturn</tt> trampoline</li>
+  <li><b>SMP scheduler</b> — multi-core boot, multi-level feedback queue with work
+      stealing, cross-CPU TLB shootdown</li>
+  <li><b>Filesystem</b> — VFS layer with ramfs, devfs (<tt>/dev/null</tt>, <tt>zero</tt>,
+      <tt>serial</tt>), a page cache, CPIO initrd</li>
+  <li><b>IPC</b> — anonymous <tt>pipe()</tt> with blocking readers and writers,
+      <tt>dup()</tt>/<tt>dup2()</tt>, kernel futexes</li>
+  <li><b>Process lifecycle</b> — <tt>wait4()</tt>, zombie reaping, exit-status encoding,
+      SIGCHLD</li>
+</ul>
+
+<h2 id="download">Download</h2>
+
+<p>A compiled kernel, ready to boot. Rumicos writes all of its output to the
+<b>serial port (COM1)</b>, not to the screen — run it under QEMU, or on UEFI
+hardware with a serial console attached.</p>
+
+<ul>
+  <li><a href="./downloads/rumicos-boot.zip">rumicos-boot.zip</a>
+      — bootable package: the Limine UEFI bootloader, <tt>limine.conf</tt>, the kernel
+      and an <tt>INSTALL.txt</tt> guide (about 200 KB)</li>
+  <li><a href="./downloads/kernel.elf">kernel.elf</a>
+      — just the kernel, for an existing Limine (or compatible) UEFI setup</li>
+</ul>
+
+<p>To try it, unpack the archive and run:</p>
+
+<pre>qemu-system-x86_64 -machine q35 -m 512M -serial stdio -display none \
+  -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd \
+  -drive format=raw,file=fat:rw:.</pre>
+
+<p>Full instructions, including booting on real hardware, are in the
+<tt>INSTALL.txt</tt> inside the archive.</p>
+
+<h2 id="build">Building from source</h2>
+
+<p>Rumicos cross-compiles on Linux, macOS and Windows with a stable Rust toolchain.
+The kernel links with <tt>rust-lld</tt>, so no host C toolchain is required.</p>
+
+<pre>rustup target add x86_64-unknown-none
+
+cargo build -p kernel --target x86_64-unknown-none --release   # build the kernel
+cargo xtask qemu-test                                          # boot it, check serial output
+cargo test --workspace                                         # 273 host tests</pre>
+
+<p>The source, documentation and engineering notes are in the
+<a href="https://github.com/ScioFuturum/rumicos">GitHub repository</a>.</p>
+
+<h2 id="miscompile">The compiler bug</h2>
+
+<p>Structures in the kernel were being corrupted silently — but only sometimes, and
+never in a way code review or ordinary tests would catch. Three separate times a
+field of a freshly copied struct came out with half of its bytes replaced by
+garbage.</p>
+
+<p>Using a custom gdbstub client with hardware watchpoints, each corruption was
+traced to one instruction sequence: an aggregate copy that
+<tt>rustc 1.97.0</tt> (LLVM 22.1.6) lowered into byte stores at stride-2 offsets,
+writing only the even bytes and leaving the odd ones as stale garbage.</p>
+
+<p>An isolated reproduction matrix and an assembly scanner pinned the trigger down
+to <tt>+sse*</tt> target features combined with this target's default
+<tt>+soft-float</tt>. The fix was a one-line build-flag change; the scanner now
+reports zero corrupted copies across the whole kernel. It matches the public
+issue <a href="https://github.com/rust-lang/rust/issues/159035">rust-lang/rust#159035</a>.
+The full write-up is in <tt>docs/miscompile-audit.md</tt> in the repository.</p>
+
+<h2 id="donate">Donate</h2>
+
+<p>Rumicos is free and open source (MIT or Apache-2.0). If it was useful or
+interesting to you, you can support the work:</p>
+
+<ul>
+  <li>Bitcoin (BTC): <span class="addr">bc1qadr78tgcytn3hj6prvwaa6pmvxf699d8lpxaza</span></li>
+  <li>USDT (TRC-20): <span class="addr">TTXt5S1hZmDQp3yc1LC2zNLod7KVDKSJqZ</span></li>
+</ul>
+
+<p>Please double-check the address after copying it, before sending anything.</p>
+
+<hr>
+<div id="footer">
+  Rumicos — <a href="https://github.com/ScioFuturum/rumicos">source on GitHub</a> —
+  <a href="./ru/">Русская версия</a> — licensed under MIT or Apache-2.0.
+</div>
+
+</div>
+</body>
+</html>

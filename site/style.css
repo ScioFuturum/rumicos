@@ -1,0 +1,120 @@
+/* Rumicos — deliberately plain, old-school project page.
+   White background, default fonts, ordinary links. No frameworks. */
+
+body {
+  background: #ffffff;
+  color: #000000;
+  font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 0;
+}
+
+#page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 12px 16px 32px 16px;
+}
+
+/* ---- header ---- */
+
+#banner {
+  border-bottom: 1px solid #990000;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+#banner h1 {
+  font-size: 22px;
+  color: #990000;
+  margin: 0;
+  padding: 0;
+}
+
+#banner .sub {
+  font-size: 11px;
+  color: #555555;
+}
+
+#nav {
+  font-size: 11px;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #cccccc;
+}
+
+/* ---- text ---- */
+
+h2 {
+  font-size: 15px;
+  color: #990000;
+  margin: 22px 0 6px 0;
+  padding: 0;
+}
+
+h3 {
+  font-size: 13px;
+  margin: 14px 0 4px 0;
+}
+
+p {
+  margin: 6px 0;
+}
+
+ul {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+li {
+  margin: 2px 0;
+}
+
+a {
+  color: #0000cc;
+}
+
+a:visited {
+  color: #551a8b;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid #cccccc;
+  margin: 20px 0 0 0;
+}
+
+tt, code, pre {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 12px;
+}
+
+pre {
+  background: #f4f4f4;
+  border: 1px solid #dddddd;
+  padding: 8px;
+  overflow-x: auto;
+}
+
+/* ---- small bits ---- */
+
+.addr {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 12px;
+  background: #f4f4f4;
+  border: 1px solid #dddddd;
+  padding: 2px 4px;
+  word-break: break-all;
+}
+
+#footer {
+  margin-top: 8px;
+  padding-top: 8px;
+  font-size: 11px;
+  color: #555555;
+}
+
+#footer a {
+  color: #0000cc;
+}

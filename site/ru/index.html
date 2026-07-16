@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rumicos — экспериментальное ядро x86-64 на Rust</title>
+<meta name="description" content="Rumicos — экспериментальное ядро операционной системы для x86-64 на Rust (no_std). Скачайте готовую к загрузке сборку или исходный код.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<div id="page">
+
+<div id="banner">
+  <h1>Rumicos</h1>
+  <div class="sub">Экспериментальное ядро операционной системы x86-64, написанное на Rust.</div>
+</div>
+
+<div id="nav">
+  <a href="#about">О проекте</a> |
+  <a href="#download">Скачать</a> |
+  <a href="#build">Сборка</a> |
+  <a href="#miscompile">Баг компилятора</a> |
+  <a href="#donate">Поддержать</a> |
+  <a href="https://github.com/ScioFuturum/rumicos">GitHub</a> |
+  <a href="../">English</a>
+</div>
+
+<h2 id="about">О проекте</h2>
+
+<p>Rumicos — небольшое Unix-подобное ядро для x86-64, написанное с нуля на Rust
+(<tt>no_std</tt>, без libc). Загружается через
+<a href="https://github.com/limine-bootloader/limine">Limine</a> по UEFI.
+Это любительский исследовательский проект, а не продукт для промышленного
+применения.</p>
+
+<p>Всё перечисленное ниже проверяется запуском настоящего ядра в QEMU, а не только
+модульными тестами. Текущая сборка проходит <b>273</b> хост-теста и
+<b>19 из 19</b> проверок реальной загрузки.</p>
+
+<ul>
+  <li><b>Процессы</b> — copy-on-write <tt>fork()</tt>, <tt>execve()</tt> с загрузкой
+      настоящих ELF-файлов, <tt>clone()</tt> (потоки CLONE_VM)</li>
+  <li><b>Виртуальная память</b> — 4-уровневая трансляция, <tt>mmap</tt>/<tt>munmap</tt>,
+      ленивые и файловые страницы, обработка copy-on-write</li>
+  <li><b>Сигналы</b> — <tt>sigaction</tt>, <tt>kill</tt>, доставка при возврате из
+      системных вызовов и прерываний, настоящий трамплин <tt>sigreturn</tt></li>
+  <li><b>SMP-планировщик</b> — загрузка нескольких ядер, многоуровневая очередь с
+      приоритетами и work stealing, TLB-shootdown между ядрами</li>
+  <li><b>Файловая система</b> — слой VFS с ramfs, devfs (<tt>/dev/null</tt>, <tt>zero</tt>,
+      <tt>serial</tt>), кэш страниц, initrd в формате CPIO</li>
+  <li><b>IPC</b> — анонимные <tt>pipe()</tt> с блокирующими чтением и записью,
+      <tt>dup()</tt>/<tt>dup2()</tt>, ядерные futex</li>
+  <li><b>Жизненный цикл процессов</b> — <tt>wait4()</tt>, уборка зомби, кодирование
+      статуса выхода, SIGCHLD</li>
+</ul>
+
+<h2 id="download">Скачать</h2>
+
+<p>Скомпилированное ядро, готовое к загрузке. Rumicos выводит всё в
+<b>последовательный порт (COM1)</b>, а не на экран — запускайте его в QEMU либо на
+UEFI-железе с подключённой serial-консолью.</p>
+
+<ul>
+  <li><a href="../downloads/rumicos-boot.zip">rumicos-boot.zip</a>
+      — загрузочный пакет: UEFI-загрузчик Limine, <tt>limine.conf</tt>, ядро и
+      инструкция <tt>INSTALL.txt</tt> (около 200 КБ)</li>
+  <li><a href="../downloads/kernel.elf">kernel.elf</a>
+      — только ядро, для уже настроенной загрузки через Limine (или совместимый
+      UEFI-загрузчик)</li>
+</ul>
+
+<p>Чтобы попробовать, распакуйте архив и выполните:</p>
+
+<pre>qemu-system-x86_64 -machine q35 -m 512M -serial stdio -display none \
+  -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd \
+  -drive format=raw,file=fat:rw:.</pre>
+
+<p>Полные инструкции, включая загрузку на реальном железе, — в файле
+<tt>INSTALL.txt</tt> внутри архива.</p>
+
+<h2 id="build">Сборка из исходников</h2>
+
+<p>Rumicos кросс-компилируется на Linux, macOS и Windows на стабильном Rust.
+Ядро линкуется через <tt>rust-lld</tt>, поэтому C-тулчейн на хосте не нужен.</p>
+
+<pre>rustup target add x86_64-unknown-none
+
+cargo build -p kernel --target x86_64-unknown-none --release   # собрать ядро
+cargo xtask qemu-test                                          # загрузить, проверить вывод
+cargo test --workspace                                         # 273 хост-теста</pre>
+
+<p>Исходный код, документация и инженерные заметки — в
+<a href="https://github.com/ScioFuturum/rumicos">репозитории на GitHub</a>.</p>
+
+<h2 id="miscompile">Баг компилятора</h2>
+
+<p>Структуры в ядре незаметно портились — но только иногда и так, что ни ревью кода,
+ни обычные тесты этого не ловили. Трижды поле только что скопированной структуры
+выходило с половиной байтов, заменённых мусором.</p>
+
+<p>С помощью самодельного gdbstub-клиента с аппаратными точками останова каждое
+повреждение было прослежено до одной последовательности инструкций: агрегатное
+копирование, которое <tt>rustc 1.97.0</tt> (LLVM 22.1.6) превращал в побайтовые
+записи со смещением через один — записывались только чётные байты, а нечётные
+оставались старым мусором.</p>
+
+<p>Изолированная матрица воспроизведения и сканер ассемблера указали на триггер:
+target-фичи <tt>+sse*</tt> в сочетании с дефолтным для этой платформы
+<tt>+soft-float</tt>. Исправление — однострочная правка флага сборки; сканер теперь
+сообщает о нуле испорченных копий во всём ядре. Это совпадает с публичной проблемой
+<a href="https://github.com/rust-lang/rust/issues/159035">rust-lang/rust#159035</a>.
+Полный разбор — в файле <tt>docs/miscompile-audit.md</tt> в репозитории.</p>
+
+<h2 id="donate">Поддержать</h2>
+
+<p>Rumicos — бесплатное ядро с открытым исходным кодом (MIT или Apache-2.0). Если оно
+оказалось вам полезным или интересным, вы можете поддержать работу:</p>
+
+<ul>
+  <li>Bitcoin (BTC): <span class="addr">bc1qadr78tgcytn3hj6prvwaa6pmvxf699d8lpxaza</span></li>
+  <li>USDT (TRC-20): <span class="addr">TTXt5S1hZmDQp3yc1LC2zNLod7KVDKSJqZ</span></li>
+</ul>
+
+<p>Пожалуйста, сверяйте адрес после копирования, прежде чем что-либо отправлять.</p>
+
+<hr>
+<div id="footer">
+  Rumicos — <a href="https://github.com/ScioFuturum/rumicos">исходный код на GitHub</a> —
+  <a href="../">English version</a> — лицензия MIT или Apache-2.0.
+</div>
+
+</div>
+</body>
+</html>

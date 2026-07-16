@@ -1,0 +1,10 @@
+hit[0] rip=0xffffffff8000d4a5 <- 0xffffffff800113be <- 0xffffffff80010af5 <- 0xffffffff800010f9  val=0x1135
+hit[1] rip=0xffffffff80017d26 <- 0xffffffff80010af5 <- 0xffffffff800010f9 <- 0xffff80007bd5ff60  val=0x202020202020202
+hit[2] rip=0xffffffff800141a2 <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x200020202020202
+hit[3] rip=0xffffffff800141aa <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x200020002020202
+hit[4] rip=0xffffffff800141b2 <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x200020002000202
+hit[5] rip=0xffffffff800141ba <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x200020002000222
+hit[6] rip=0xffffffff800141a2 <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x2ff020002000222
+hit[7] rip=0xffffffff800141aa <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x2ff020002000222
+hit[8] rip=0xffffffff800141b2 <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x2ff020002f50222
+hit[9] rip=0xffffffff800141ba <- 0xffffffff800109e0 <- 0xffffffff800010f9  val=0x2ff020002f50200

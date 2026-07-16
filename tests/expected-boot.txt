@@ -1,0 +1,41 @@
+# Expected serial output for `cargo xtask qemu-test`.
+#
+# Each non-comment line must appear in the kernel's serial output as a
+# SUBSTRING (never full-line equality — Limine's boot banner and the
+# kernel's single-letter boot-progress markers share the line with the
+# first message), and the lines must appear IN THIS ORDER.
+#
+# A `~` prefix marks a line whose position is only anchored to the last
+# unprefixed line above it: it must appear at-or-after that line, but its
+# order relative to the other `~` lines in the same group is not checked.
+# Use this for output whose interleaving legitimately depends on the
+# scheduler — the fork test's parent and child print concurrently, and
+# both orders have been observed on known-good boots.
+#
+# UPDATING THIS FILE: when a feature checkpoint legitimately changes the
+# boot output (e.g. init2.asm gains a new test that prints a new line),
+# run `cargo xtask qemu-test`, confirm from target/qemu-test-serial.log
+# that the new output is correct BY READING IT (not by pasting whatever
+# appeared), then add/adjust the lines here in the same commit as the
+# feature. Never delete a line just to make CI pass — a previously-green
+# line going missing is exactly the regression this file exists to catch.
+
+Hello Rumicos
+execve works!
+mmap: demand-zero page reads 0 before any write - OK
+mmap: write 0xAB then read back 0xAB - OK
+file mmap: initial content is 'P' from real file - OK
+file mmap: munmap writeback landed in file ('X') - OK
+signal: SIGUSR1 received
+signal: handler returned OK
+signal: callee-saved registers preserved - OK
+signals: all OK
+pipe: write/read through pipe - OK
+pipe: dup2 aliasing - OK
+wait: child running
+fork: child name intact after copy - OK
+wait: child exited with code 42 - OK
+~child: shared_byte inherited as 0x42 - OK
+~child: CoW write resolved, shared_byte='C' - OK
+~parent: shared_byte inherited as 0x42 - OK
+~parent: CoW write resolved, shared_byte='P' - OK

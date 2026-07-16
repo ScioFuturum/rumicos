@@ -1,0 +1,69 @@
+[package]
+name = "miscompile-repro"
+version = "0.1.0"
+edition = "2024"
+# Scratch crate for the rustc 1.97.0 aggregate-copy miscompile audit
+# (docs/miscompile-audit.md). NOT part of the kernel workspace — the empty
+# [workspace] table below detaches it, so `cargo check --workspace` and
+# `cargo xtask qemu-test` at the repo root never see it.
+
+[workspace]
+
+[lib]
+name = "miscompile_repro"
+path = "src/lib.rs"
+# staticlib so the x86_64-unknown-none build produces a linkable artifact
+# without needing the kernel linker script; rlib for the host runner bin.
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "repro"
+path = "src/main.rs"
+required-features = ["std"]
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# The real lock the kernel uses, so the guard-deref shape is identical.
+kernel-sync = { path = "../crates/sync" }
+
+# ── profile matrix ─────────────────────────────────────────────────────────
+# `release` mirrors the kernel's root Cargo.toml [profile.release] EXACTLY.
+# The rel-* variants exist only for test case (g): which knob makes the
+# miscompile appear/disappear.
+
+[profile.release]
+codegen-units = 1
+debug = 1
+lto = "fat"
+opt-level = 3
+overflow-checks = false
+panic = "abort"
+strip = "debuginfo"
+
+[profile.rel-o2]
+inherits = "release"
+opt-level = 2
+
+[profile.rel-o1]
+inherits = "release"
+opt-level = 1
+
+[profile.rel-o0]
+inherits = "release"
+opt-level = 0
+
+[profile.rel-nolto]
+inherits = "release"
+lto = "off"
+
+[profile.rel-thinlto]
+inherits = "release"
+lto = "thin"
+
+[profile.rel-cgu16]
+inherits = "release"
+codegen-units = 16
+lto = "off"

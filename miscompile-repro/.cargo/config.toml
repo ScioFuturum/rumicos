@@ -1,0 +1,13 @@
+# Mirror of the kernel workspace's target rustflags (minus the two
+# link-args, which only apply when producing the final kernel ELF — the
+# repro staticlib never links). code-model / no-redzone / frame-pointers /
+# relocation-model / target-features all affect LLVM lowering, so they must
+# match for the emitted code to be representative.
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "code-model=kernel",
+    "-C", "force-frame-pointers=yes",
+    "-C", "no-redzone=yes",
+    "-C", "relocation-model=static",
+    "-C", "target-feature=+cmpxchg16b,+sse4.2,+xsave",
+]

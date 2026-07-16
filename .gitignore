@@ -1,0 +1,27 @@
+# Rust / Cargo build output
+/target
+**/target/
+*.o
+
+# Local editor / tooling state
+/.claude/
+*.code-workspace
+
+# QEMU / OVMF runtime state (regenerated on boot / by `cargo xtask qemu-test`)
+/run/esp/NvVars
+/run/esp/kernel.elf
+/run/esp/limine.conf
+/target/qemu-test-serial.log
+
+# Runtime logs
+*.log
+run/*.log
+
+# OS cruft
+Thumbs.db
+.DS_Store
+
+# NOTE: intentionally NOT ignored (needed to build/boot):
+#   initrd/init2.elf, initrd/initrd.cpio  (embedded via include_bytes!)
+#   run/esp/EFI/BOOT/BOOTX64.EFI, run/esp/limine.conf
+#   site/downloads/*  (released artifacts served by GitHub Pages)

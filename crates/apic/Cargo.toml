@@ -1,0 +1,13 @@
+[package]
+name = "kernel-apic"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "kernel_apic"
+path = "src/lib.rs"
+
+[dependencies]
+kernel-arch-x86_64 = { path = "../arch-x86_64" }

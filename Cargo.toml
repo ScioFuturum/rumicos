@@ -1,0 +1,38 @@
+[workspace]
+members = [
+    "crates/arch-x86_64",
+    "crates/sync",
+    "crates/ipc",
+    "crates/memory",
+    "crates/cpu",
+    "crates/paging",
+    "crates/proc",
+    "crates/fs",
+    "crates/apic",
+    "crates/smp",
+    "crates/sched",
+    "kernel",
+    "xtask",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.97"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+codegen-units = 1
+debug = 1
+lto = "fat"
+opt-level = 3
+overflow-checks = false
+panic = "abort"
+strip = "debuginfo"
+
+[profile.release.build-override]
+codegen-units = 1
+opt-level = 3
