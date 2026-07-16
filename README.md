@@ -5,7 +5,7 @@ booted by [Limine](https://github.com/limine-bootloader/limine) over UEFI).
 
 *Экспериментальное ядро ОС для x86-64 на Rust — `no_std`, без libc, загрузка через Limine по UEFI.*
 
-**273** host tests passing · **19/19** live QEMU boot checks · `MIT OR Apache-2.0`
+**273** host tests passing · **19/19** live QEMU boot checks · `GPL-3.0-only`
 
 > 🌐 **Website / Сайт:** https://sciofuturum.github.io/rumicos/
 > ⬇️ **Download the ready-to-boot build / Скачать готовую сборку:** see the [website](https://sciofuturum.github.io/rumicos/#download).
@@ -107,6 +107,20 @@ the [website](https://sciofuturum.github.io/rumicos/#donate).
 *Это бесплатное открытое ядро. Крипто-донат приветствуется — см. раздел «Донат» на сайте.*
 
 ## License / Лицензия
-Dual-licensed under **MIT** or **Apache-2.0** at your option — see [`LICENSE-MIT`](LICENSE-MIT)
-and [`LICENSE-APACHE`](LICENSE-APACHE). The bundled Limine bootloader binary
-(`run/esp/EFI/BOOT/BOOTX64.EFI`) is distributed under its own BSD-2-Clause license.
+
+Rumicos is free software, licensed under the **GNU General Public License, version 3 only**
+(`GPL-3.0-only`) — see [`LICENSE`](LICENSE) for the full text.
+
+This means you may use, study, share and modify it, but any distributed derivative work must
+also be released under the GPLv3 and ship its complete corresponding source. It comes with
+**no warranty** — see sections 15 and 16 of the licence.
+
+*Rumicos — свободное программное обеспечение под лицензией **GNU General Public License версии 3**
+(`GPL-3.0-only`), полный текст — в файле [`LICENSE`](LICENSE). Это значит, что вы можете
+использовать, изучать, распространять и изменять его, но любая распространяемая производная
+работа тоже обязана выходить под GPLv3 и сопровождаться полным исходным кодом. Программа
+поставляется **без каких-либо гарантий** (см. разделы 15 и 16 лицензии).*
+
+The bundled Limine bootloader binary (`run/esp/EFI/BOOT/BOOTX64.EFI`, and the copy inside
+`site/downloads/rumicos-boot.zip`) is third-party software distributed under its own
+BSD-2-Clause licence, which is GPL-compatible.
