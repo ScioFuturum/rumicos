@@ -1,0 +1,117 @@
+You are updating the existing Rumicos GitHub Pages site (docs/index.html in
+the repository). The project has REPOSITIONED: it is no longer presented as a
+general-purpose Unix-like OS, but as a kernel developed toward secure network
+infrastructure — routers, firewalls, and network appliances.
+
+IMPORTANT — read before writing anything:
+  - Read the CURRENT docs/index.html in full. This is a repositioning, not a
+    rewrite from zero.
+  - Read the NEWLY REWRITTEN README.md in the repository root — it now carries
+    the network-appliance positioning, an honest status table, and a
+    dual-licensing note. The site must match the README's claims exactly;
+    the README is the source of truth. Do not put a claim on the site that
+    isn't in the README.
+  - Note especially: the README explicitly marks the network stack, packet
+    filtering, and persistent storage as NOT IMPLEMENTED. The site must be
+    equally honest about this. Overstating on a public page that technical
+    reviewers may read is worse than understating.
+
+## Changes required
+
+### 1. Reposition the hero/mission section
+
+Replace the general-purpose framing with the network-infrastructure framing:
+  - A from-scratch x86_64 kernel in Rust, developed toward network appliance
+    use, where a small auditable memory-safe codebase matters more than a
+    broad application ecosystem
+  - Not a fork or derivative of any existing kernel
+  - The reasoning: network-facing code parses untrusted input by definition,
+    making it a primary source of memory-safety vulnerabilities in
+    conventional C-based network stacks
+
+Do NOT name, compare against, or characterize any specific competing product
+(commercial or open source, domestic or foreign). State what Rumicos is on
+its own terms. Comparative claims about named competitors' weaknesses are
+exactly what a technical reviewer will scrutinize hardest, and the project
+has no benchmark data to support any such claim.
+
+Avoid the phrase "has no analogues in the world" or equivalent superlatives
+in any language — it reads as a lack of familiarity with the field.
+
+### 2. Status section — must show what does NOT exist
+
+Mirror the README's status table, INCLUDING the rows marked "not implemented".
+A status table that only lists completed items is misleading by omission. The
+honest version ("kernel foundation complete and hardware-verified; network
+stack in development") is both more credible and more interesting than an
+implied claim of completeness.
+
+### 3. Verification section (new — this is the project's real differentiator)
+
+Add a short section describing the three-layer verification approach, since
+this is genuinely unusual for a project of this size:
+  - Host unit tests over deliberately-separated pure logic cores
+  - Boot regression under QEMU checking real serial output against an expected
+    output file
+  - Scanning the project's own compiled binary for known-bad code generation
+    patterns, added after three distinct compiler miscompilation bugs were
+    found during development
+
+Keep this factual and specific. It is more persuasive than any adjective.
+
+### 4. Licensing section (update)
+
+The project is GPL-3.0, with commercial licensing available separately for
+organizations that cannot accept GPL obligations. State this plainly. Link to
+the LICENSE file.
+
+### 5. Support / donation section — DECIDE AND ASK
+
+The current page has a cryptocurrency donation section from an earlier
+checkpoint. There is now a tension: the page simultaneously offers commercial
+licensing (a B2B posture) and asks for crypto donations (a hobby-project
+posture). These send inconsistent signals to the two different audiences the
+page now needs to serve.
+
+Do not decide this unilaterally. Present the tradeoff to the developer and ask
+which they want:
+  (a) Keep donations as-is — fine if the primary audience remains individual
+      developers and the commercial angle is secondary
+  (b) Move donations to a less prominent position (e.g. a footer link rather
+      than a full section) — keeps the option without leading with it
+  (c) Remove donations entirely in favor of a "commercial licensing and
+      support — contact" line — strongest B2B posture
+
+Whatever is chosen: if the donation section is kept in any form, the wallet
+addresses must remain byte-for-byte identical to what is currently deployed.
+Do not regenerate, re-derive, or retype them.
+
+### 6. Tone and design
+
+Unchanged constraints from the original site checkpoint: single static HTML
+file, no backend, no analytics, no external trackers, no CSS framework,
+dark-mode-friendly, dependency-free. Sober and technical — this page may be
+read by technical reviewers evaluating the project seriously.
+
+Do NOT add: company names, founder/CEO titles, business registration details,
+grant application status, employee counts, revenue projections, or any claim
+about organizational structure. No legal entity exists. The page describes
+software.
+
+## Verification
+
+  - Every factual claim on the page traces to a line in README.md
+  - The "not implemented" items appear on the page, not just the completed ones
+  - Donation addresses (if kept) are byte-identical to the deployed version —
+    diff that section specifically
+  - No named competitor appears anywhere on the page
+  - Redeploy via GitHub Pages and fetch the live URL to confirm rendering
+
+## Deliverables
+
+  1. Updated docs/index.html
+  2. A diff summary: what was repositioned, what was preserved unchanged, what
+     was removed
+  3. The donation-section question posed to the developer with the three
+     options laid out
+  4. Confirmation the live page renders correctly after redeploy

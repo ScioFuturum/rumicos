@@ -1,0 +1,415 @@
+You are an expert x86_64 kernel engineer continuing development of the
+"Rumicos" kernel. The project has repositioned toward network appliance use;
+the network stack is now the central development effort and currently does not
+exist at all.
+
+IMPORTANT — same lesson as every previous checkpoint: read the ACTUAL current
+code before writing anything. Specifically:
+
+  - Is there ANY PCI support in the tree? (grep for "pci", "PCI", "0xCF8",
+    "MCFG", "ECAM"). Expected: none. Confirm before assuming.
+  - Is there ANY MSI/MSI-X or I/O APIC support? (grep "msix", "MSI", "ioapic").
+    Expected: none — a PS/2 keyboard checkpoint that would have added I/O APIC
+    support was specified but never implemented, so this is greenfield.
+  - What interrupt vectors are currently allocated? Find every
+    register_handler() call site plus TIMER_VECTOR, SHOOTDOWN_VECTOR, and the
+    reschedule IPI vector added during shell SMP debugging. You need
+    non-colliding vectors.
+  - kernel-apic's LAPIC implementation — MSI/MSI-X delivers directly to a
+    LAPIC without any I/O APIC involvement, so the existing x2APIC/xAPIC code
+    is the foundation you build on.
+  - kernel-memory's allocator API — exact names for allocating physically
+    contiguous frames, and whether a "physically contiguous, below 4 GiB"
+    allocation path exists (alloc_frame_below_4g was added during the SMP
+    trampoline work — check whether it generalizes to multi-frame allocations,
+    since virtqueue rings need physical contiguity).
+  - DIRECT_MAP_BASE and the established pattern for accessing a physical
+    address from kernel code.
+  - The bucket-locked table pattern (futex/cow/pagecache) and the
+    "never block while holding a lock" discipline — both apply here.
+
+Note every substitution vs. this brief in your summary.
+
+Developer is on Windows 11; QEMU with q35 machine type is the test target.
+
+## Scope
+
+Two parts, STRICT order, fully verify Part A before starting Part B:
+
+  Part A: PCI bus enumeration + MSI-X interrupt delivery
+  Part B: virtio transport, split virtqueues, and the virtio-net device
+
+Part A is a prerequisite with kernel-wide blast radius (new interrupt
+delivery path). Do not begin Part B until Part A is verified working in
+isolation — otherwise a failure in Part B is indistinguishable from a
+latent Part A bug.
+
+This checkpoint ends with: the kernel can receive and transmit raw Ethernet
+frames. It does NOT include IP, ARP, TCP, or sockets — those are the next
+checkpoint (integrating smoltcp).
+
+---
+
+# PART A — PCI enumeration and MSI-X
+
+## A1 — PCI configuration space access
+
+Implement legacy port-based access first (simpler, works on q35, sufficient
+for this checkpoint):
+
+  const PCI_CONFIG_ADDRESS: u16 = 0xCF8;
+  const PCI_CONFIG_DATA:    u16 = 0xCFC;
+
+  /// Build the CONFIG_ADDRESS value:
+  ///   bit 31    = enable
+  ///   bits 23:16 = bus
+  ///   bits 15:11 = device (slot)
+  ///   bits 10:8  = function
+  ///   bits 7:2   = register offset (dword-aligned)
+  ///   bits 1:0   = always 0
+  fn config_address(bus: u8, device: u8, function: u8, offset: u8) -> u32;
+
+  /// # Safety: ring 0 port I/O
+  pub unsafe fn pci_config_read_u32(bus: u8, dev: u8, func: u8, off: u8) -> u32;
+  pub unsafe fn pci_config_write_u32(bus: u8, dev: u8, func: u8, off: u8, val: u32);
+  // Plus u16/u8 helpers derived from the u32 accessors with correct
+  // byte-lane extraction (offset & 3 selects the lane).
+
+Document that ECAM/MMIO config access (via the ACPI MCFG table) is the modern
+alternative and would be needed for PCIe extended config space (offsets
+beyond 0xFF) — not required here, note as future work.
+
+## A2 — Bus enumeration
+
+  #[derive(Clone, Copy)]
+  pub struct PciDevice {
+      pub bus: u8, pub device: u8, pub function: u8,
+      pub vendor_id: u16, pub device_id: u16,
+      pub class: u8, pub subclass: u8, pub prog_if: u8,
+      pub header_type: u8,
+      pub bars: [u64; 6],        // decoded BAR addresses
+      pub bar_is_mmio: [bool; 6],
+      pub bar_sizes: [u64; 6],
+  }
+
+  pub const MAX_PCI_DEVICES: usize = 32;
+
+  /// Brute-force scan: all 256 buses × 32 devices × 8 functions.
+  /// A vendor_id of 0xFFFF means "no device present" — skip.
+  /// Only probe functions 1-7 if header_type bit 7 (multifunction) is set on
+  /// function 0.
+  /// Store results in a fixed-capacity static array.
+  pub fn enumerate_pci() -> usize;  // returns device count found
+
+BAR decoding, done correctly:
+  - Read the BAR (offset 0x10 + 4*n)
+  - Bit 0: 0 = MMIO, 1 = I/O space
+  - For MMIO: bits 2:1 give the type — 0b00 = 32-bit, 0b10 = 64-bit
+    (a 64-bit BAR consumes the NEXT BAR slot as its high dword — skip it in
+    the iteration, this is a classic off-by-one source)
+  - To determine size: write all 1s to the BAR, read it back, mask off the
+    type bits, invert, add 1. THEN RESTORE THE ORIGINAL VALUE — failing to
+    restore leaves the device with a corrupted BAR and is a real bug that
+    manifests much later as inexplicable MMIO failures.
+  - Disable memory/IO decoding in the command register (offset 0x04) while
+    sizing BARs, re-enable afterward.
+
+## A3 — MSI-X setup
+
+MSI-X is preferred over legacy INTx here specifically because it delivers
+straight to a LAPIC — no I/O APIC parsing or configuration needed, and the
+existing kernel-apic LAPIC code is sufficient foundation. Legacy INTx would
+require implementing I/O APIC support first.
+
+Walk the PCI capability list:
+  - Status register (offset 0x06) bit 4 indicates a capability list exists
+  - Capability pointer at offset 0x34 (low byte)
+  - Each capability: [0] = capability ID, [1] = next pointer, rest = data
+  - MSI-X capability ID = 0x11
+
+MSI-X capability layout:
+  offset 0x00: cap_id (0x11), next_ptr
+  offset 0x02: message control — bits 10:0 = table size MINUS ONE
+               (so a value of 2 means 3 entries — another classic off-by-one),
+               bit 15 = MSI-X enable, bit 14 = function mask
+  offset 0x04: table offset/BIR — bits 2:0 = BAR index, bits 31:3 = offset
+               into that BAR (already 8-byte aligned, do not shift)
+  offset 0x08: PBA offset/BIR — same encoding
+
+MSI-X table entry (16 bytes each):
+  offset 0x0: message address low
+  offset 0x4: message address high
+  offset 0x8: message data
+  offset 0xC: vector control — bit 0 = mask (1 = masked)
+
+Message address/data encoding for x86 LAPIC delivery:
+  address = 0xFEE0_0000 | (destination_apic_id << 12)
+    (physical destination mode, no redirection hint, no destination mode bit)
+  data    = vector          (bits 7:0; delivery mode 000 = fixed,
+                             trigger mode edge — all other bits 0)
+
+Note: this address format encodes an 8-bit APIC ID. For x2APIC with IDs above
+255 the interrupt remapping unit is required — out of scope, but assert the
+destination APIC ID fits in 8 bits and document the limitation.
+
+  /// Enable MSI-X on a device, routing table entry `index` to `vector` on
+  /// `dest_apic_id`. Unmasks both the entry and the function.
+  /// # Safety: device must have an MSI-X capability; the table BAR must be
+  /// mapped and accessible via direct-map.
+  pub unsafe fn msix_enable(dev: &PciDevice, index: u16, vector: u8, dest_apic_id: u32);
+
+## A4 — Part A verification (do this before touching Part B)
+
+  - Enumerate PCI at boot, print every device found (bus:dev.func,
+    vendor:device, class) to serial. Under QEMU q35 you should see the host
+    bridge, ISA bridge, and — if you add `-device virtio-net-pci` to the QEMU
+    command — a device with vendor 0x1AF4.
+  - Print the decoded BARs and their sizes for the virtio device.
+  - Print whether an MSI-X capability was found and its table size.
+  - Add these lines to tests/expected-boot.txt so PCI enumeration becomes a
+    boot regression check.
+  - Confirm cargo xtask qemu-test still passes with the new lines.
+
+DO NOT proceed to Part B until this is green.
+
+---
+
+# PART B — virtio transport and virtio-net
+
+## B1 — Identify the device
+
+virtio PCI vendor ID: 0x1AF4
+  - Device ID 0x1000 = transitional/legacy network device
+  - Device ID 0x1041 = modern network device (0x1040 + virtio device type 1)
+
+Target MODERN virtio (spec 1.0+) only. Detect which the device presents and
+if it is legacy-only, report that clearly rather than silently misbehaving —
+QEMU's `-device virtio-net-pci` on q35 presents a modern-capable device by
+default, but confirm what you actually find.
+
+## B2 — virtio PCI capabilities
+
+Modern virtio exposes its configuration through PCI vendor-specific
+capabilities (capability ID 0x09). Each has:
+
+  offset 0x00: cap_id (0x09), next_ptr, cap_len
+  offset 0x03: cfg_type
+  offset 0x04: bar          (which BAR the structure lives in)
+  offset 0x05: padding[3]
+  offset 0x08: offset       (byte offset within that BAR)
+  offset 0x0C: length
+
+cfg_type values:
+  1 = COMMON_CFG    — the main control structure
+  2 = NOTIFY_CFG    — queue notification region (this capability has an
+                      EXTRA u32 field at offset 0x10: notify_off_multiplier)
+  3 = ISR_CFG       — interrupt status (only needed for legacy INTx; with
+                      MSI-X you do not read it)
+  4 = DEVICE_CFG    — device-specific config (MAC address for net)
+  5 = PCI_CFG       — alternate access path, not needed
+
+Walk the capability list, collect the ones you need, compute each structure's
+virtual address as DIRECT_MAP_BASE + bar_physical_address + offset.
+
+## B3 — Common configuration structure
+
+  #[repr(C)]
+  struct VirtioPciCommonCfg {
+      device_feature_select: u32,  // write to select feature word
+      device_feature:        u32,  // read-only
+      driver_feature_select: u32,
+      driver_feature:        u32,
+      config_msix_vector:    u16,
+      num_queues:            u16,  // read-only
+      device_status:         u8,
+      config_generation:     u8,   // read-only
+      // Per-queue registers, selected via queue_select:
+      queue_select:          u16,
+      queue_size:            u16,
+      queue_msix_vector:     u16,
+      queue_enable:          u16,
+      queue_notify_off:      u16,  // read-only
+      queue_desc:            u64,  // physical address
+      queue_driver:          u64,  // physical address (available ring)
+      queue_device:          u64,  // physical address (used ring)
+  }
+
+ALL accesses to this structure must be read_volatile/write_volatile — it is
+MMIO, and the compiler must not reorder, coalesce, or elide any access.
+
+Given this project's history with compiler-generated aggregate copies
+silently corrupting data, do NOT read or write this structure as a whole
+aggregate. Access one field at a time via volatile operations on computed
+field addresses.
+
+## B4 — Device initialization sequence (order is mandatory)
+
+Status register bits:
+  ACKNOWLEDGE = 1, DRIVER = 2, DRIVER_OK = 4, FEATURES_OK = 8,
+  DEVICE_NEEDS_RESET = 64, FAILED = 128
+
+  1. Write 0 to device_status (reset). Read it back until it reads 0.
+  2. Set ACKNOWLEDGE.
+  3. Set DRIVER.
+  4. Read device features (two 32-bit words via device_feature_select 0 and 1).
+  5. Negotiate a MINIMAL feature set — write back only:
+       VIRTIO_F_VERSION_1     (bit 32 — i.e. bit 0 of feature word 1)
+       VIRTIO_NET_F_MAC       (bit 5 — device supplies a MAC address)
+     Explicitly do NOT negotiate VIRTIO_NET_F_MRG_RXBUF (bit 15) — merged
+     RX buffers significantly complicate receive handling and are not needed
+     for a first working driver. Do not negotiate checksum offload, GSO/TSO,
+     or the control queue either. Every feature you decline is code you do
+     not have to write correctly on the first attempt.
+  6. Set FEATURES_OK.
+  7. Read device_status back and verify FEATURES_OK is still set. If the
+     device cleared it, the feature combination was rejected — report this
+     clearly and stop, do not continue with an unconfigured device.
+  8. Set up virtqueues (B5).
+  9. Set DRIVER_OK.
+
+## B5 — Split virtqueues
+
+Three memory regions per queue, each physically contiguous, each allocated
+from the frame allocator and accessed via direct-map:
+
+  Descriptor table — 16 bytes × queue_size, 16-byte aligned:
+    #[repr(C)] struct VirtqDesc { addr: u64, len: u32, flags: u16, next: u16 }
+    flags: NEXT = 1, WRITE = 2 (device writes to this buffer), INDIRECT = 4
+
+  Available ring — driver writes, device reads, 2-byte aligned:
+    #[repr(C)] struct VirtqAvail { flags: u16, idx: u16, ring: [u16; queue_size] }
+    (plus a trailing used_event u16 if VIRTIO_F_EVENT_IDX negotiated — you are
+     not negotiating it, so omit)
+
+  Used ring — device writes, driver reads, 4-byte aligned:
+    #[repr(C)] struct VirtqUsedElem { id: u32, len: u32 }
+    #[repr(C)] struct VirtqUsed { flags: u16, idx: u16, ring: [VirtqUsedElem; queue_size] }
+
+Since queue_size is a runtime value, these cannot be plain Rust arrays —
+compute offsets manually within an allocated region and access via raw
+pointers, or cap queue_size at a compile-time maximum (e.g. min(device's
+queue_size, 256)) and use fixed arrays. The capped-fixed-array approach fits
+this codebase's no-alloc discipline better; state which you chose.
+
+Per queue, write the three physical addresses into queue_desc / queue_driver /
+queue_device, set queue_size, assign queue_msix_vector, then set queue_enable.
+
+The `idx` fields wrap at 65536, NOT at queue_size. The ring index is
+`idx % queue_size`. Getting this wrong produces a driver that works until the
+first wrap and then corrupts silently — a genuinely nasty class of bug.
+
+Memory ordering: before incrementing avail.idx, all descriptor writes must be
+visible to the device. Use a release fence. After reading used.idx, use an
+acquire fence before reading the used ring entries.
+
+## B6 — Notification
+
+Notify address = notify_cfg_base + queue_notify_off × notify_off_multiplier
+(both values read during setup). Write the queue index (u16) to that address
+to tell the device new buffers are available.
+
+## B7 — virtio-net specifics
+
+Queue 0 = receive, queue 1 = transmit. (Queue 2 would be the control queue —
+not used, since you are not negotiating control-queue features.)
+
+Every packet buffer, both RX and TX, is prefixed by a header:
+
+  #[repr(C)]
+  struct VirtioNetHdr {
+      flags: u8, gso_type: u8, hdr_len: u16, gso_size: u16,
+      csum_start: u16, csum_offset: u16,
+      num_buffers: u16,   // present when VIRTIO_F_VERSION_1 is negotiated
+  }
+
+With VIRTIO_F_VERSION_1 this header is 12 bytes. Verify with a compile-time
+size assertion. For transmit with no offload features negotiated, zero the
+entire header.
+
+RX setup: before setting DRIVER_OK, fill the receive queue with empty buffers
+(each: header + 1514 bytes for a standard Ethernet frame), each descriptor
+marked WRITE (device writes into it). Refill buffers as they are consumed.
+
+MAC address: read from the device-specific config region (first 6 bytes) when
+VIRTIO_NET_F_MAC was negotiated. Print it at boot.
+
+## B8 — Interrupt handling
+
+Register a handler for the MSI-X vector assigned to the RX queue. In the
+handler:
+  - Send EOI first (consistent with the established handler ordering in this
+    kernel's timer and other IRQ handlers)
+  - Process completed used-ring entries: for each, note the received frame
+    and re-post the buffer to the available ring
+  - Do NOT call schedule() or block — mark work available and let the existing
+    wake-from-IRQ pattern handle any waiting thread
+
+For this checkpoint, "processing" a received frame means: print its length and
+first bytes to serial. Actual protocol handling arrives with smoltcp in the
+next checkpoint.
+
+## B9 — Verification
+
+Add a boot-time self-test:
+  - Print the device's MAC address
+  - Transmit one hardcoded raw Ethernet frame (e.g. a broadcast ARP request
+    for some address) and confirm the descriptor is returned in the used ring
+  - Run QEMU with a network backend that lets you observe traffic — e.g.
+    `-netdev user,id=n0 -device virtio-net-pci,netdev=n0` plus
+    `-object filter-dump,id=dump,netdev=n0,file=capture.pcap`
+  - Confirm the transmitted frame appears in capture.pcap (inspect the file
+    size, or parse the pcap header + first record length — a simple size check
+    is sufficient evidence for this checkpoint)
+  - For RX: QEMU's user-mode networking will respond to a correctly-formed
+    DHCP or ARP request; alternatively confirm RX by checking that at least
+    one buffer is consumed from the receive queue
+
+Add the MAC address line and a TX confirmation line to
+tests/expected-boot.txt.
+
+## Code requirements
+
+  - #![no_std], no alloc
+  - Every MMIO access via read_volatile/write_volatile, field by field, never
+    as an aggregate struct copy
+  - Every unsafe block has a // SAFETY: comment
+  - Fixed-capacity arrays with named constants (MAX_PCI_DEVICES,
+    MAX_QUEUE_SIZE, RX_BUFFER_COUNT)
+  - Compile-time size assertions on every #[repr(C)] hardware structure
+  - cargo clippy --workspace -- -D warnings clean
+  - cargo xtask qemu-test passes with the new expected lines
+
+## Unit tests (cfg(test), host) — >= 12 new
+
+  - config_address() bit packing for known bus/dev/func/offset combinations
+  - BAR size calculation from a written-all-1s readback value
+  - 64-bit BAR detection: type bits 0b10 means the next slot is the high dword
+  - MSI-X table size decoding: message control value N means N+1 entries
+  - MSI-X message address encoding for a given destination APIC ID
+  - MSI-X message data encoding for a given vector
+  - virtio capability parsing from a synthetic capability list byte array
+  - Notify address arithmetic: base + queue_notify_off × multiplier
+  - Ring index wrapping: idx values near 65535 map to the correct ring slot
+    for a given queue_size (test at least one wrap boundary)
+  - VirtioNetHdr size == 12 with VERSION_1
+  - VirtqDesc size == 16
+  - Feature negotiation: given a device feature bitmap, the driver's requested
+    subset is exactly VERSION_1 | MAC and nothing else
+
+## Deliver
+
+  1. Part A findings: what PCI/MSI-X/IOAPIC support existed before (expected:
+     none), which vectors were free, what devices QEMU q35 actually presents
+  2. Part A verification output BEFORE any Part B code was written
+  3. Complete implementation of both parts
+  4. Which queue-size approach you chose (runtime offsets vs capped fixed
+     arrays) and why
+  5. Integration diff: boot sequence changes, new QEMU flags needed in xtask
+  6. Test module
+  7. Updated tests/expected-boot.txt
+  8. The pcap evidence that a frame was actually transmitted
+  9. Known limitations: legacy PCI config access only (no ECAM/extended
+     config), no interrupt remapping (8-bit APIC IDs only), minimal feature
+     set (no offload, no merged RX buffers, no control queue), single device
+     supported, no link-status handling, RX processing is print-only pending
+     the network stack
