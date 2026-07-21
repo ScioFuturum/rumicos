@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rumicos — an operating system written in Rust</title>
-<meta name="description" content="Rumicos is an x86-64 operating system written from scratch in Rust — a universal kernel as the foundation for a domestic software ecosystem.">
+<title>Rumicos — an operating system in Rust for network infrastructure</title>
+<meta name="description" content="Rumicos is an x86-64 operating system in Rust, developed for network appliances — routers, firewalls, and other network devices where a small, auditable, memory-safe codebase matters more than a broad application ecosystem.">
 <link rel="stylesheet" href="../style.css">
 </head>
 <body>
@@ -12,142 +12,120 @@
 
 <div id="banner">
   <h1>Rumicos</h1>
-  <div class="sub">An operating system written from scratch in Rust.</div>
+  <div class="sub">An operating system in Rust for network infrastructure.</div>
 </div>
 
 <div id="nav">
   <a href="#about">About</a> |
-  <a href="#novelty">Novelty</a> |
-  <a href="#market">Applications</a> |
+  <a href="#why">Why Rust</a> |
+  <a href="#status">Status</a> |
   <a href="#roadmap">Roadmap</a> |
-  <a href="#team">Team</a> |
-  <a href="#download">Download</a> |
+  <a href="#model">License &amp; model</a> |
+  <a href="#contact">Contact</a> |
   <a href="https://github.com/ScioFuturum/rumicos">GitHub</a> |
   <a href="../">Русский</a>
 </div>
 
 <h2 id="about">About</h2>
 
-<p>Rumicos is an operating system for x86-64 computers. We write it from scratch in
-Rust — borrowing no existing kernel (Linux, BSD, or the like) and no C standard
-library. The kernel is the part of the system that governs the processor, memory and
-devices; everything else rests on it. We build it as a universal foundation, so one
-and the same base can serve both a desktop system and embedded devices. The first
-target is an operating system for ordinary personal computers.</p>
+<p>Rumicos is an operating system for the x86-64 architecture, written from scratch
+in Rust. It is developed toward network appliances — routers, firewalls, and other
+network devices — where a small, auditable, memory-safe codebase matters more than
+broad application compatibility.</p>
 
-<p>Everything below is verified by booting the real kernel in the QEMU virtual
-machine, not only by unit tests in isolation. The current build passes <b>277</b>
-automated tests and <b>30 of 30</b> live boot checks.</p>
+<p>Rumicos is not a fork or derivative of Linux, BSD, or any existing kernel. Every
+line of the kernel is original work. That means there is no inherited third-party
+codebase to take on trust or to audit separately.</p>
 
-<p>What already works:</p>
+<h2 id="why">Why Rust, and why network devices</h2>
 
-<ul>
-  <li><b>Processes</b> — <tt>fork()</tt> with copy-on-write memory, running real ELF
-      binaries via <tt>execve()</tt>, threads (<tt>clone()</tt>)</li>
-  <li><b>Memory</b> — four-level address translation, <tt>mmap</tt>/<tt>munmap</tt>,
-      demand paging</li>
-  <li><b>Multi-core</b> — booting on several CPU cores, a priority scheduler with
-      cross-core load balancing</li>
-  <li><b>Filesystem</b> — a VFS layer, an in-memory filesystem, devices
-      (<tt>/dev</tt>), a page cache</li>
-  <li><b>Inter-process communication</b> — pipes, signals, waiting on child
-      processes</li>
-  <li><b>Shell</b> — an interactive command shell with pipelines
-      (<tt>cmd1 | cmd2</tt>), I/O redirection and program execution</li>
-</ul>
+<p>Network code parses untrusted input by definition — packets arrive from outside.
+That is exactly why it remains a primary source of memory-safety vulnerabilities in
+conventional C-based network stacks. Rumicos is built in Rust, where memory safety is
+a structural property of the language rather than a matter of review discipline:
+whole classes of bugs (out-of-bounds access, use-after-free, data races) are ruled
+out at compile time.</p>
 
-<h2 id="novelty">Scientific and technical novelty</h2>
+<p>Because the system targets network devices rather than general-purpose computers,
+it does not need the broad driver surface, desktop environment, or application
+compatibility layers that make general-purpose kernels large and hard to audit. Less
+code means a smaller attack surface and a codebase that can actually be reviewed.</p>
 
-<p>Rumicos is not "yet another Linux build". The difference is in the foundation:</p>
+<h2 id="status">Status</h2>
 
-<ul>
-  <li><b>Memory safety at the compiler level.</b> Rust rules out at build time whole
-      classes of bugs — out-of-bounds access, use-after-free, data races — that cause
-      the majority of vulnerabilities in system software. For an operating-system
-      kernel, where such a bug means the whole machine is compromised, this is a
-      fundamental advantage over classic C kernels.</li>
-  <li><b>A compiler bug was found.</b> During development, data structures began to
-      corrupt silently — but only sometimes, and in a way neither code review nor
-      ordinary tests caught. Using hardware watchpoint debugging, the cause was
-      traced to a single mis-compiled instruction sequence in
-      <tt>rustc&nbsp;1.97.0</tt>. It matches the public issue
-      <a href="https://github.com/rust-lang/rust/issues/159035">rust-lang/rust#159035</a>.
-      That level of diagnosis speaks to the engineering depth of the project.</li>
-  <li><b>Verification on the real kernel.</b> Every feature is confirmed by booting
-      the actual kernel and checking its output, not only by testing functions in
-      isolation.</li>
-</ul>
+<p>The kernel foundation is complete and verified on real hardware under KVM. The
+network stack is the current development focus and is <b>not yet implemented</b>.
+Below is an honest status table, including what is not done.</p>
 
-<h2 id="market">Applications and market</h2>
+<table class="status">
+  <tr><th>Layer</th><th>Status</th></tr>
+  <tr><td>Boot</td><td class="st-done">Limine protocol, UEFI, higher-half kernel</td></tr>
+  <tr><td>CPU</td><td class="st-done">GDT / TSS / IDT, SYSCALL/SYSRET, per-CPU state via GSBASE</td></tr>
+  <tr><td>Memory</td><td class="st-done">4-level paging, direct-map, PCID, NUMA-aware buddy allocator, SMAP/SMEP</td></tr>
+  <tr><td>SMP</td><td class="st-done">ACPI/MADT parsing, AP bring-up, x2APIC/xAPIC, TLB shootdown</td></tr>
+  <tr><td>Scheduling</td><td class="st-done">preemptive MLFQ, per-CPU run queues, work-stealing, futex, mutexes</td></tr>
+  <tr><td>Processes</td><td class="st-done">ELF64 loader, ring-3 execution, copy-on-write <tt>fork</tt>, <tt>execve</tt>, threads</td></tr>
+  <tr><td>Memory mapping</td><td class="st-done">anonymous and file-backed <tt>mmap</tt>, <tt>MAP_SHARED</tt>, page cache</td></tr>
+  <tr><td>Filesystem</td><td class="st-done">VFS, ramfs, devfs, CPIO initrd</td></tr>
+  <tr><td>IPC</td><td class="st-done"><tt>pipe</tt>, <tt>dup</tt>/<tt>dup2</tt>, POSIX signals, <tt>wait4</tt></td></tr>
+  <tr><td>Userspace</td><td class="st-done">interactive shell with pipelines and redirection, keyboard input</td></tr>
+  <tr><td>PCI bus / MSI-X</td><td class="st-wip">device enumeration and interrupt delivery — groundwork for the network card</td></tr>
+  <tr><td>Network stack</td><td class="st-no">not implemented — in development</td></tr>
+  <tr><td>Packet filtering</td><td class="st-no">not implemented — planned</td></tr>
+  <tr><td>Persistent storage</td><td class="st-no">not implemented — planned</td></tr>
+</table>
 
-<p>The kernel is designed as a <b>universal foundation</b> for a software ecosystem.
-The first product on top of it is a desktop operating system: a workstation that,
-from the kernel up to the applications, is entirely under control and independent of
-foreign platforms.</p>
+<h3>How it is verified</h3>
 
-<p>Against the backdrop of migration to domestic software, demand for such solutions
-is forming in the public sector, in industry and in education. A kernel written in a
-safe language and fully open is a foundation on which application software can be
-built without reliance on other parties' licences or backdoors.</p>
+<p>Two independent layers. <b>Host unit tests</b> — pure logic (allocator arithmetic,
+page-table encoding, parsers) is deliberately separated from unsafe hardware-facing
+code so it can be tested without hardware. <b>Boot regression under QEMU</b> —
+<tt>cargo xtask qemu-test</tt> boots the real kernel image and checks its serial
+output against an expected-output file. The project additionally scans its own
+compiled binary for known-bad code generation: three distinct compiler
+miscompilation bugs were found during development, each silently corrupting data and
+detectable only by inspecting the generated machine code.</p>
 
 <h2 id="roadmap">Roadmap</h2>
 
 <ul>
-  <li><span class="stage done">[done]</span> x86-64 kernel: processes, memory,
-      multi-core, filesystem, pipes and signals</li>
-  <li><span class="stage done">[done]</span> userspace program execution and an
-      interactive command shell</li>
-  <li><span class="stage done">[done]</span> keyboard input (PS/2) through real
-      interrupts (I/O APIC)</li>
-  <li><span class="stage wip">[in progress]</span> drivers for the remaining basic
-      devices</li>
-  <li><span class="stage plan">[planned]</span> graphical output and a windowing
-      environment</li>
-  <li><span class="stage plan">[planned]</span> networking and support for more
-      hardware</li>
-  <li><span class="stage plan">[planned]</span> a set of applications on top of the
-      system</li>
+  <li><span class="stage done">[done]</span> kernel foundation: processes, memory,
+      multi-core, filesystem, shell, keyboard input</li>
+  <li><span class="stage wip">[in progress]</span> PCI bus and MSI-X interrupt
+      delivery — groundwork for the network adapter</li>
+  <li><span class="stage plan">[planned]</span> network card driver and Ethernet
+      frame transmit/receive</li>
+  <li><span class="stage plan">[planned]</span> network stack (IP, TCP/UDP)</li>
+  <li><span class="stage plan">[planned]</span> packet filtering and persistent
+      configuration storage</li>
 </ul>
 
-<p><b>How the project earns.</b> Revenue is planned not from the operating system
-itself but from the software that runs on it. The first target is an office suite
-with built-in AI from domestic developers. The kernel remains the universal
-foundation around which an ecosystem of Russian software is built, and that is where
-the business model sits.</p>
+<h2 id="model">License and model</h2>
 
-<h2 id="team">Team and organization</h2>
+<p>Rumicos is free software under the
+<a href="https://github.com/ScioFuturum/rumicos/blob/main/LICENSE">GNU GPL v3</a>.
+The source is fully open.</p>
 
-<ul>
-  <li><b>Applicant organization:</b> ScioFuturum</li>
-  <li><b>Project lead:</b> Ilya Sergeevich Sutorma</li>
-  <li><b>Region:</b> Bryansk Oblast, Russia</li>
-  <li><b>Contact:</b> +7&nbsp;962&nbsp;144-50-52,
-      <a href="mailto:sciofuturum@tutamail.com">sciofuturum@tutamail.com</a></li>
-</ul>
+<p>The revenue model is not based on selling the operating system itself. The planned
+sources are commercial licensing for organizations that cannot accept the obligations
+of the GPL; technical support and maintenance; certification work; and integration of
+the system into a customer's hardware. None of these require closing the source to the
+community.</p>
 
-<h2 id="download">Download and build</h2>
+<h2 id="contact">Contact</h2>
 
-<p>Rumicos cross-compiles on Linux, macOS and Windows with a stable Rust toolchain.
-The kernel links with <tt>rust-lld</tt>, so no separate host C toolchain is needed.
-For now the system writes all of its output to the serial port (COM1) — the easiest
-way to run it is under QEMU.</p>
+<p>The project is developed in the open; for collaboration, licensing, or use, write
+to <a href="mailto:sciofuturum@tutamail.com">sciofuturum@tutamail.com</a>.</p>
+
+<h2 id="build">Build and run</h2>
 
 <pre>rustup target add x86_64-unknown-none
-
 cargo build -p kernel --target x86_64-unknown-none --release   # build the kernel
 cargo xtask qemu-test                                          # boot it, check the output
-cargo test --workspace                                         # 277 automated tests</pre>
+cargo test --workspace                                         # host unit tests</pre>
 
-<p>A ready-to-boot build and the source are in the
+<p>The source and engineering notes are in the
 <a href="https://github.com/ScioFuturum/rumicos">GitHub repository</a>.</p>
-
-<ul>
-  <li><a href="../downloads/rumicos-boot.zip">rumicos-boot.zip</a>
-      — bootable package: the Limine UEFI bootloader, the kernel and a startup
-      guide</li>
-  <li><a href="../downloads/kernel.elf">kernel.elf</a>
-      — just the kernel, for an existing Limine UEFI setup</li>
-</ul>
 
 <hr>
 <div id="footer">

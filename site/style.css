@@ -121,6 +121,27 @@ pre {
   color: #333333;
 }
 
+/* honest status table */
+table.status {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+  width: 100%;
+}
+table.status th,
+table.status td {
+  border: 1px solid #cccccc;
+  padding: 3px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+table.status th {
+  background: #f4f4f4;
+}
+.st-done { color: #007700; }
+.st-wip  { color: #b36b00; }
+.st-no   { color: #990000; font-weight: bold; }
+
 #footer {
   margin-top: 8px;
   padding-top: 8px;
