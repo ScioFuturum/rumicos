@@ -111,13 +111,46 @@ pub static DEVSERIAL_OPS: VNodeOps = VNodeOps {
     release: vnode_release_noop,
 };
 
-// ─── global serial VNode pointer ─────────────────────────────────────────
+// ─── /dev/keyboard ───────────────────────────────────────────────────────
+
+/// Blocking read backed by the interrupt-driven PS/2 keyboard driver. The
+/// byte stream is identical in shape to what /dev/serial delivered (raw
+/// ASCII, `\n` on Enter, `0x08` on Backspace), so the shell's read_line()
+/// and everything above the syscall layer are unaffected — only the device
+/// behind fd 0 changes.
+fn devkeyboard_read(_: &VNode, buf: &mut [u8], _: u64) -> i64 {
+    kernel_keyboard::keyboard_read(buf)
+}
+
+/// Writing to the keyboard device discards its input (there is nothing to
+/// write to). Reports success so a stray write never errors a caller.
+fn devkeyboard_write(_: &VNode, buf: &[u8], _: u64) -> i64 {
+    buf.len() as i64
+}
+
+pub static DEVKEYBOARD_OPS: VNodeOps = VNodeOps {
+    read: devkeyboard_read,
+    write: devkeyboard_write,
+    lookup: vnode_lookup_noop,
+    create: vnode_create_noop,
+    readdir: vnode_readdir_noop,
+    truncate: vnode_truncate_noop,
+    release: vnode_release_noop,
+};
+
+// ─── global device VNode pointers ────────────────────────────────────────
 
 static SERIAL_VN: AtomicUsize = AtomicUsize::new(0);
+static KEYBOARD_VN: AtomicUsize = AtomicUsize::new(0);
 
 /// Return the /dev/serial VNode pointer (direct-map VA).
 pub fn serial_vnode() -> *mut VNode {
     SERIAL_VN.load(Ordering::Acquire) as *mut VNode
+}
+
+/// Return the /dev/keyboard VNode pointer (direct-map VA).
+pub fn keyboard_vnode() -> *mut VNode {
+    KEYBOARD_VN.load(Ordering::Acquire) as *mut VNode
 }
 
 // ─── init ─────────────────────────────────────────────────────────────────
@@ -128,15 +161,19 @@ pub fn init_devfs(dev_dir: *mut VNode) {
     let null_vn = make_device_vnode(&DEVNULL_OPS);
     let zero_vn = make_device_vnode(&DEVZERO_OPS);
     let serial_vn = make_device_vnode(&DEVSERIAL_OPS);
+    let keyboard_vn = make_device_vnode(&DEVKEYBOARD_OPS);
 
     ramfs_dir_add_child(dev_dir, "null", null_vn);
     ramfs_dir_add_child(dev_dir, "zero", zero_vn);
     ramfs_dir_add_child(dev_dir, "serial", serial_vn);
+    ramfs_dir_add_child(dev_dir, "keyboard", keyboard_vn);
 
     SERIAL_VN.store(serial_vn as usize, Ordering::Release);
-    // Tell kernel-proc about the serial VNode so Process::create can
-    // pre-open fd 0/1/2 for new processes.
+    KEYBOARD_VN.store(keyboard_vn as usize, Ordering::Release);
+    // Tell kernel-proc about both device VNodes. Process::create pre-opens
+    // fd 1/2 (stdout/stderr) on serial and fd 0 (stdin) on the keyboard.
     kernel_proc::set_serial_vnode(serial_vn as usize);
+    kernel_proc::set_keyboard_vnode(keyboard_vn as usize);
 }
 
 fn make_device_vnode(ops: &'static VNodeOps) -> *mut VNode {

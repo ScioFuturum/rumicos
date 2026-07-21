@@ -105,22 +105,36 @@ fn kernel_main() {
 
     kernel_paging::set_global_numa_buddy_allocator();
     kernel_apic::init_bsp();
+    // Mask the legacy 8259 PICs outright: this kernel routes every interrupt
+    // through the LAPIC/I/O APIC, so a live PIC could only ever double-
+    // deliver or inject spurious IRQs. Must happen before interrupts are
+    // enabled (they are, at the scheduler start below).
+    // SAFETY: boot context, IF=0, run exactly once on the BSP.
+    unsafe { kernel_apic::disable_pic() };
     unsafe { serial_debug_byte(b'A') }
     kernel_cpu::register_handler(kernel_apic::TIMER_VECTOR, timer_handler);
     let _ticks_per_ms = kernel_apic::calibrate_timer();
     unsafe { serial_debug_byte(b'T') }
 
     let rsdp_phys = limine::get_rsdp_phys();
-    let (cpus, cpu_count) = unsafe { kernel_smp::parse_madt(rsdp_phys) };
+    let madt = unsafe { kernel_smp::parse_madt(rsdp_phys) };
+    let bsp_apic_id = kernel_apic::apic_id();
     unsafe { serial_debug_byte(b'D') }
     let pml4_phys = kernel_paging::current_pml4_phys();
-    let ap_count =
-        unsafe { kernel_smp::trampoline::start_aps(&cpus[..cpu_count], pml4_phys, rsdp_phys) };
+    let ap_count = unsafe {
+        kernel_smp::trampoline::start_aps(&madt.cpus[..madt.cpu_count], pml4_phys, rsdp_phys)
+    };
     unsafe { serial_debug_byte(b'S') }
     while kernel_smp::ap_entry::AP_READY_COUNT.load(Ordering::Acquire) < ap_count {
         core::hint::spin_loop();
     }
     unsafe { serial_debug_byte(b'W') }
+
+    // ── PCI enumeration (virtio-net Part A) ───────────────────────────────
+    // Brute-force scan the PCI buses and report every function found, its
+    // decoded BARs/sizes, and any MSI-X capability. Uses config-space port
+    // I/O only (no MMIO, no I/O APIC); MSI-X delivers straight to a LAPIC.
+    pci_report();
 
     kernel_sched::init(kernel_smp::online_count());
     // Reschedule kick: when kernel-sched parks a thread on a REMOTE CPU's
@@ -131,6 +145,26 @@ fn kernel_main() {
     kernel_cpu::register_handler(RESCHED_VECTOR, resched_handler);
     kernel_sched::register_kick_hook(resched_kick);
     unsafe { serial_debug_byte(b'R') }
+
+    // ── PS/2 keyboard ─────────────────────────────────────────────────────
+    // Route the keyboard's ISA IRQ1 through the I/O APIC to KEYBOARD_VECTOR
+    // on the BSP, register its handler, then bring the i8042 controller up.
+    // The APIC MMIO window was mapped in paging init; the legacy PIC was
+    // masked above. If routing fails (no I/O APIC covers the GSI) the system
+    // still boots — it just has no keyboard, so don't init the controller.
+    kernel_cpu::register_handler(
+        kernel_apic::KEYBOARD_VECTOR,
+        kernel_keyboard::keyboard_irq_handler,
+    );
+    // SAFETY: boot context, IF=0; the I/O APIC MMIO is mapped and the topology
+    // came from this boot's MADT.
+    let kbd_routed =
+        unsafe { kernel_apic::ioapic::init_keyboard_irq_routing(bsp_apic_id, &madt.ioapics, &madt.isos) };
+    if kbd_routed {
+        // SAFETY: run once at boot, IF=0, after the IRQ is routed.
+        unsafe { kernel_keyboard::init_ps2_keyboard() };
+    }
+    unsafe { serial_debug_byte(if kbd_routed { b'K' } else { b'k' }) }
 
     // ── VFS / process init ────────────────────────────────────────────────
     // Order: proc init → fs init (registers serial VNode + chain handler)
@@ -198,6 +232,53 @@ unsafe fn serial_debug_read(port: u16) -> u8 {
         options(nomem, nostack));
     }
     v
+}
+
+// ─── PCI enumeration report (virtio-net Part A) ───────────────────────────
+
+/// Format one line to COM1. Reuses the panic path's raw polled writer; this
+/// runs on the BSP at boot with no other CPU touching the serial port yet.
+fn boot_log(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = PanicSerial.write_fmt(args);
+}
+
+/// Enumerate the PCI buses and print a report: every function, its BARs and
+/// their sizes, its MSI-X table size if present, and a distinct line for any
+/// virtio device (vendor `0x1AF4`). This is the Part A verification output.
+fn pci_report() {
+    let n = kernel_pci::enumerate_pci();
+    boot_log(format_args!("\r\npci: enumerated {n} function(s)\r\n"));
+    for i in 0..n {
+        let Some(d) = kernel_pci::get(i) else { continue };
+        boot_log(format_args!(
+            "pci: {:02x}:{:02x}.{} {:04x}:{:04x} class {:02x}:{:02x} prog_if {:02x}\r\n",
+            d.bus, d.device, d.function, d.vendor_id, d.device_id, d.class, d.subclass, d.prog_if,
+        ));
+        for b in 0..6 {
+            if d.bar_sizes[b] != 0 {
+                boot_log(format_args!(
+                    "pci:   bar{} {} base {:#x} size {:#x}\r\n",
+                    b,
+                    if d.bar_is_mmio[b] { "mmio" } else { "io  " },
+                    d.bars[b],
+                    d.bar_sizes[b],
+                ));
+            }
+        }
+        if d.has_msix {
+            boot_log(format_args!(
+                "pci:   msix capability, table size {}\r\n",
+                d.msix_table_size,
+            ));
+        }
+        if d.vendor_id == 0x1af4 {
+            boot_log(format_args!(
+                "virtio: device {:04x}:{:04x} found at {:02x}:{:02x}.{}\r\n",
+                d.vendor_id, d.device_id, d.bus, d.device, d.function,
+            ));
+        }
+    }
 }
 
 // ─── timer / scheduling ───────────────────────────────────────────────────

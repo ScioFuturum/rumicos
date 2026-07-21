@@ -11,8 +11,10 @@ dependencies = [
  "kernel-cpu",
  "kernel-fs",
  "kernel-ipc",
+ "kernel-keyboard",
  "kernel-memory",
  "kernel-paging",
+ "kernel-pci",
  "kernel-proc",
  "kernel-sched",
  "kernel-smp",
@@ -41,6 +43,7 @@ dependencies = [
 name = "kernel-fs"
 version = "0.1.0"
 dependencies = [
+ "kernel-keyboard",
  "kernel-memory",
  "kernel-proc",
  "kernel-sched",
@@ -52,6 +55,16 @@ name = "kernel-ipc"
 version = "0.1.0"
 dependencies = [
  "kernel-arch-x86_64",
+]
+
+[[package]]
+name = "kernel-keyboard"
+version = "0.1.0"
+dependencies = [
+ "kernel-apic",
+ "kernel-cpu",
+ "kernel-sched",
+ "kernel-sync",
 ]
 
 [[package]]
@@ -68,6 +81,13 @@ version = "0.1.0"
 dependencies = [
  "kernel-arch-x86_64",
  "kernel-memory",
+ "kernel-sync",
+]
+
+[[package]]
+name = "kernel-pci"
+version = "0.1.0"
+dependencies = [
  "kernel-sync",
 ]
 

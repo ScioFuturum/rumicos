@@ -20,6 +20,8 @@ kernel-sync = { path = "../crates/sync" }
 kernel-paging = { path = "../crates/paging" }
 kernel-proc = { path = "../crates/proc" }
 kernel-apic = { path = "../crates/apic" }
+kernel-pci = { path = "../crates/pci" }
+kernel-keyboard = { path = "../crates/keyboard" }
 kernel-smp = { path = "../crates/smp" }
 kernel-sched = { path = "../crates/sched" }
     kernel-fs = { path = "../crates/fs" }

@@ -24,6 +24,7 @@ fn main() -> ExitCode {
         "pgo" => pgo(),
         "qemu" => qemu(args.collect()),
         "qemu-test" => qemu_test(),
+        "qemu-test-keyboard" => qemu_test_keyboard(),
         "mkinitrd" => mkinitrd(),
         "build-userspace" => build_userspace(),
         _ => help(),
@@ -64,6 +65,7 @@ fn help() -> Result<(), String> {
     println!("  pgo          instrumented build, workload hook, optimized rebuild");
     println!("  qemu [elf]   boot the kernel via Limine/UEFI in QEMU q35 (KVM/WHPX with TCG fallback)");
     println!("  qemu-test    boot in QEMU headless and check serial output against tests/expected-boot.txt");
+    println!("  qemu-test-keyboard  boot, then drive the shell via QEMU monitor `sendkey` and check the typed command ran");
     println!("  mkinitrd     build userspace + pack initrd/initrd.cpio (cpio-free)");
     println!("  build-userspace  build /bin/shell, /bin/echo, /bin/cat for x86_64-unknown-none");
     Ok(())
@@ -363,12 +365,26 @@ fn qemu_test() -> Result<(), String> {
     // KVM on Linux when /dev/kvm is present; plain TCG everywhere else.
     // (`-cpu host` needs a hardware accelerator; `max` is the proven TCG
     // model — qemu64 lacks features this kernel probes for, e.g. PCID.)
-    let (machine, cpu, accel_name) = if cfg!(target_os = "linux") && Path::new("/dev/kvm").exists()
-    {
-        ("q35,accel=kvm", "host", "kvm")
+    let use_kvm = cfg!(target_os = "linux") && Path::new("/dev/kvm").exists();
+    let (cpu, accel_name) = if use_kvm { ("host", "kvm") } else { ("max", "tcg") };
+    // TCG's translation buffer defaults to ~1 GiB backed by a single
+    // contiguous VirtualAlloc; on a Windows host with a small page file that
+    // allocation fails outright ("allocate ... bytes for jit buffer: the
+    // paging file is too small"), before the kernel ever runs. `tb-size`
+    // (MiB) caps it — 128 MiB is ample for this kernel and lets the gate run
+    // on a constrained host. Passed via `-accel` (accel is configured there,
+    // not on `-machine`, so the two forms do not conflict). Overridable via
+    // RUMICOS_QEMU_TB_SIZE; ignored by KVM.
+    let tb_size = env::var("RUMICOS_QEMU_TB_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(128);
+    let accel = if use_kvm {
+        "kvm".to_string()
     } else {
-        ("q35,accel=tcg", "max", "tcg")
+        format!("tcg,tb-size={tb_size}")
     };
+    let machine = "q35";
 
     let timeout_secs: u64 = env::var("RUMICOS_QEMU_TEST_TIMEOUT")
         .ok()
@@ -380,6 +396,8 @@ fn qemu_test() -> Result<(), String> {
 
     let mut cmd = Command::new(&qemu_bin);
     qemu_common_args(&mut cmd, machine, cpu, &ovmf, &esp);
+    cmd.arg("-accel");
+    cmd.arg(&accel);
     cmd.arg("-serial");
     cmd.arg(format!("file:{}", log_path.display()));
     cmd.stdin(std::process::Stdio::null());
@@ -451,6 +469,172 @@ fn qemu_test() -> Result<(), String> {
     ))
 }
 
+/// `cargo xtask qemu-test-keyboard`: boot headless, wait for the shell's
+/// interactive prompt, then drive the PS/2 keyboard end-to-end by sending
+/// `sendkey` commands through QEMU's monitor (a TCP socket, portable to the
+/// Windows dev host) — no human at a graphical console. Verifies the typed
+/// command both echoed (input reached read_line) and executed (its output
+/// appeared), proving the whole I/O APIC → IRQ1 → ring → blocking-read →
+/// shell path works.
+///
+/// Kept SEPARATE from `qemu-test`: it needs a live monitor connection and
+/// per-keystroke timing, so it is inherently slower and a touch more
+/// timing-sensitive than the deterministic serial-only gate. `qemu-test`
+/// stays the headless, keyboard-independent CI gate; this is a targeted
+/// verification command (run it by hand, or add it to CI once its timing
+/// has proven stable on the runner).
+#[cfg(not(target_os = "none"))]
+fn qemu_test_keyboard() -> Result<(), String> {
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+
+    cargo_kernel(true)?;
+    let kernel = PathBuf::from("target/x86_64-unknown-none/release/kernel");
+    let esp = prepare_esp(&kernel)?;
+    let qemu_bin = qemu_binary()?;
+    let ovmf = find_ovmf()?;
+
+    let use_kvm = cfg!(target_os = "linux") && Path::new("/dev/kvm").exists();
+    let (cpu, accel_name) = if use_kvm { ("host", "kvm") } else { ("max", "tcg") };
+    let tb_size = env::var("RUMICOS_QEMU_TB_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(128);
+    let accel = if use_kvm {
+        "kvm".to_string()
+    } else {
+        format!("tcg,tb-size={tb_size}")
+    };
+
+    // The command we "type" and the marker we look for in its OUTPUT. Absolute
+    // path because the shell has no PATH search. `kbdok` appears TWICE on
+    // success: once echoed as the line is typed, once as /bin/echo's output.
+    let command = "/bin/echo kbdok";
+    let marker = "kbdok";
+    let monitor_port: u16 = env::var("RUMICOS_QEMU_MONITOR_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(55_432);
+
+    let log_path = PathBuf::from("target/qemu-test-keyboard-serial.log");
+    let _ = std::fs::remove_file(&log_path);
+
+    let mut cmd = Command::new(&qemu_bin);
+    qemu_common_args(&mut cmd, "q35", cpu, &ovmf, &esp);
+    cmd.arg("-accel");
+    cmd.arg(&accel);
+    cmd.arg("-serial");
+    cmd.arg(format!("file:{}", log_path.display()));
+    // Expose the human monitor on a TCP socket QEMU listens on; we connect
+    // to it once the guest is up and issue `sendkey` from there.
+    cmd.arg("-monitor");
+    cmd.arg(format!("tcp:127.0.0.1:{monitor_port},server,nowait"));
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+
+    eprintln!("qemu-test-keyboard: booting with accel={accel_name}, monitor on 127.0.0.1:{monitor_port}");
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| format!("spawn {}: {err}", qemu_bin.display()))?;
+
+    // A closure to read the current serial log (empty until QEMU creates it).
+    let read_log = || -> String {
+        std::fs::read(&log_path)
+            .map(|raw| strip_serial_noise(&raw))
+            .unwrap_or_default()
+    };
+
+    // 1. Wait for the shell's interactive prompt (it prints this right before
+    //    it first blocks on the keyboard).
+    let boot_deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        if read_log().contains("interactive mode") {
+            break;
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "qemu-test-keyboard FAILED: QEMU exited early ({status}) before the shell prompt"
+            ));
+        }
+        if Instant::now() >= boot_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("qemu-test-keyboard FAILED: shell never reached interactive mode".into());
+        }
+    }
+
+    // 2. Connect to the monitor and "type" the command, one key at a time.
+    let mut mon = TcpStream::connect(("127.0.0.1", monitor_port))
+        .map_err(|e| format!("connect QEMU monitor: {e}"))?;
+    mon.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    for token in sendkey_tokens(command) {
+        writeln!(mon, "sendkey {token}")
+            .map_err(|e| format!("monitor sendkey {token}: {e}"))?;
+        mon.flush().ok();
+        // A short gap lets the guest's IRQ handler drain each keystroke.
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    // Enter: run the line.
+    writeln!(mon, "sendkey ret").map_err(|e| format!("monitor sendkey ret: {e}"))?;
+    mon.flush().ok();
+
+    // 3. Wait for the marker to appear TWICE (echoed input + command output).
+    let run_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let log = read_log();
+        if log.matches(marker).count() >= 2 {
+            let _ = child.kill();
+            let _ = child.wait();
+            eprintln!(
+                "qemu-test-keyboard: OK — typed `{command}` via sendkey; \
+                 `{marker}` echoed and executed (accel={accel_name})"
+            );
+            return Ok(());
+        }
+        if Instant::now() >= run_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let log = read_log();
+            let tail: Vec<&str> = log.lines().rev().take(12).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            return Err(format!(
+                "qemu-test-keyboard FAILED: `{marker}` did not appear twice after typing \
+                 `{command}` — keystrokes may not be reaching the shell.\n\n\
+                 last serial output:\n  {}\n\nfull serial log: {}",
+                tail.join("\n  "),
+                log_path.display()
+            ));
+        }
+    }
+}
+
+/// Map each character of `s` to the QEMU `sendkey` token that produces it.
+/// Only the characters this checkpoint's test command needs are handled
+/// (lower-case letters, digits, and a few symbols); anything else is
+/// skipped with a note so the caller notices rather than silently mis-types.
+#[cfg(not(target_os = "none"))]
+fn sendkey_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in s.chars() {
+        let tok = match c {
+            'a'..='z' | '0'..='9' => c.to_string(),
+            ' ' => "spc".to_string(),
+            '/' => "slash".to_string(),
+            '-' => "minus".to_string(),
+            '.' => "dot".to_string(),
+            other => {
+                eprintln!("qemu-test-keyboard: no sendkey mapping for {other:?}, skipping");
+                continue;
+            }
+        };
+        out.push(tok);
+    }
+    out
+}
+
 /// Copy the freshly built kernel and limine.conf into the Limine UEFI ESP
 /// directory QEMU's vvfat driver boots from, verifying the Limine loader
 /// itself is present. The kernel speaks the Limine boot protocol
@@ -510,6 +694,11 @@ fn qemu_common_args(cmd: &mut Command, machine: &str, cpu: &str, ovmf: &Path, es
     // temp overlay, vvfat only ever services reads, and the device still
     // presents as writable. (This is the vvfat-documented recipe.)
     cmd.arg(format!("format=raw,file=fat:{},snapshot=on", esp.display()));
+
+    // A virtio-net-pci device (PCI vendor 0x1AF4) for the network checkpoint:
+    // PCI enumeration reports it, and the virtio driver (Part B) binds to it.
+    // The user-mode netdev backend needs no host-side configuration.
+    cmd.args(["-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"]);
 }
 
 /// Locate `qemu-system-x86_64` via PATH, falling back to the default

@@ -223,6 +223,33 @@ impl PagingInit {
         }
     }
 
+    /// Map the fixed x86 APIC MMIO window into the direct map.
+    ///
+    /// The I/O APIC (0xFEC00000) and the local APIC (0xFEE00000) live in the
+    /// PC MMIO hole, which Limine reports as reserved — so `map_direct_memory`
+    /// skips it. Both `kernel_apic::ioapic` and the xAPIC MMIO fallback reach
+    /// their registers through `DIRECT_MAP_BASE + phys`, so this page must be
+    /// present. (Until the I/O APIC was needed for the keyboard, nothing
+    /// exercised this: CI runs in x2APIC mode, where the LAPIC is MSR-mapped
+    /// and never touches MMIO.) Mapped write-through + no-execute, the same
+    /// UC- substitute the framebuffer uses.
+    ///
+    /// `[0xFEC00000, 0xFF000000)` is two 2 MiB pages covering both APICs.
+    fn map_apic_mmio(&self, builder: &mut PageTableBuilder) {
+        let flags = PageFlags::new()
+            .with_present()
+            .with_writable()
+            .with_global()
+            .with_write_through()
+            .with_no_execute();
+        self.map_region_2m(
+            builder,
+            PhysAddr::new(0xFEC0_0000),
+            PhysAddr::new(0xFF00_0000),
+            flags,
+        );
+    }
+
     /// Map a region using 2 MiB pages
     fn map_region_2m(
         &self,
@@ -415,6 +442,10 @@ impl PagingInit {
 
         // Step 3: Map direct physical memory
         self.map_direct_memory(&mut builder);
+        // ...plus the fixed APIC MMIO window (I/O APIC + LAPIC), which the
+        // Limine memmap does not report as usable and map_direct_memory
+        // therefore skips. Needed for I/O APIC keyboard routing.
+        self.map_apic_mmio(&mut builder);
         unsafe { serial_marker(b'3') };
 
         // Step 4: Map kernel sections

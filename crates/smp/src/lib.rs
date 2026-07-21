@@ -10,7 +10,7 @@ pub mod ap_entry;
 pub mod cpuinfo;
 pub mod trampoline;
 
-pub use acpi::{CpuEntry, MAX_CPUS, parse_madt};
+pub use acpi::{CpuEntry, MAX_CPUS, MadtInfo, parse_madt};
 pub use cpuinfo::{
     CpuInfo, apic_id_for_cpu, apic_id_to_cpu_id, cpu_count, online_count, register_cpu,
 };

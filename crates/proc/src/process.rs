@@ -175,11 +175,16 @@ impl Process {
         #[cfg(not(target_os = "none"))]
         let thread = core::ptr::null_mut();
 
-        // Pre-populate fd 0/1/2 with the serial VNode if VFS is already up.
+        // Pre-populate fd 0/1/2 if the VFS is already up. stdout/stderr go
+        // to the serial console; stdin is the keyboard when one is
+        // registered (real interactive input), falling back to serial
+        // otherwise so a keyboard-less boot still has a readable fd 0.
         let mut fd_tab = FdTable::new();
         let serial_ptr = SERIAL_VNODE_PTR.load(Ordering::Acquire);
         if serial_ptr != 0 {
-            fd_tab.alloc(serial_ptr, crate::fd::O_RDONLY); // fd 0 = stdin
+            let keyboard_ptr = crate::syscall::KEYBOARD_VNODE_PTR.load(Ordering::Acquire);
+            let stdin_ptr = if keyboard_ptr != 0 { keyboard_ptr } else { serial_ptr };
+            fd_tab.alloc(stdin_ptr, crate::fd::O_RDONLY); // fd 0 = stdin
             fd_tab.alloc(serial_ptr, crate::fd::O_WRONLY); // fd 1 = stdout
             fd_tab.alloc(serial_ptr, crate::fd::O_WRONLY); // fd 2 = stderr
         }

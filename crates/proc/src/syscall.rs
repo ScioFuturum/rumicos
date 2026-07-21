@@ -42,8 +42,14 @@ static CHAIN_HANDLER: AtomicUsize = AtomicUsize::new(0);
 static EXEC_LOADER: AtomicUsize = AtomicUsize::new(0);
 
 /// Direct-map VA of the /dev/serial VNode; set by kernel-fs on init.
-/// Process::create reads this to pre-populate fd 0/1/2.
+/// Process::create reads this to pre-populate fd 1/2 (stdout/stderr) and,
+/// when no keyboard is registered, fd 0 too.
 pub static SERIAL_VNODE_PTR: AtomicUsize = AtomicUsize::new(0);
+
+/// Direct-map VA of the /dev/keyboard VNode; set by kernel-fs on init.
+/// Process::create pre-opens fd 0 (stdin) on it when present, so the shell
+/// reads real keystrokes through a blocking device instead of serial.
+pub static KEYBOARD_VNODE_PTR: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_os = "none")]
 static SERIAL_READY: AtomicBool = AtomicBool::new(false);
@@ -91,9 +97,15 @@ pub fn load_exec_file(path: &str, buf: &mut [u8]) -> i64 {
 }
 
 /// Store the direct-map VA of /dev/serial so Process::create can pre-open
-/// fd 0/1/2 for new processes.
+/// fd 1/2 (and fd 0 as a fallback) for new processes.
 pub fn set_serial_vnode(ptr: usize) {
     SERIAL_VNODE_PTR.store(ptr, Ordering::Release);
+}
+
+/// Store the direct-map VA of /dev/keyboard so Process::create pre-opens
+/// fd 0 (stdin) on it.
+pub fn set_keyboard_vnode(ptr: usize) {
+    KEYBOARD_VNODE_PTR.store(ptr, Ordering::Release);
 }
 
 /// Page-cache resolver registered by kernel-fs's `pagecache` module.

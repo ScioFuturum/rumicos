@@ -16,3 +16,5 @@ kernel-proc   = { path = "../proc"   }
 # Pipes block/wake on WaitQueues (crates/fs/src/pipe.rs). No cycle:
 # kernel-sched does not depend on kernel-fs.
 kernel-sched  = { path = "../sched"  }
+# /dev/keyboard's read() delegates to the PS/2 driver's blocking read.
+kernel-keyboard = { path = "../keyboard" }

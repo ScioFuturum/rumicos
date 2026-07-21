@@ -9,6 +9,8 @@ members = [
     "crates/proc",
     "crates/fs",
     "crates/apic",
+    "crates/pci",
+    "crates/keyboard",
     "crates/smp",
     "crates/sched",
     "kernel",

@@ -31,7 +31,7 @@ pub use process::{Pid, Process, ProcessState, alloc_pid};
 pub use syscall::{
     SYS_EXECVE, current_process, is_user_ptr, register_exec_loader, register_extra,
     register_page_cache_hooks, register_vnode_refcount_hooks, register_vnode_release_hook,
-    set_serial_vnode,
+    set_keyboard_vnode, set_serial_vnode,
 };
 pub use vma::{SYS_MMAP, SYS_MUNMAP};
 
