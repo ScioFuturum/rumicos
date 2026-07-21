@@ -20,6 +20,18 @@
 # feature. Never delete a line just to make CI pass — a previously-green
 # line going missing is exactly the regression this file exists to catch.
 
+# PCI enumeration (virtio-net Part A): pci_report() scans the bus before the
+# scheduler starts, so these lines appear before "Hello Rumicos". On q35 with
+# `-device virtio-net-pci` the virtio device (vendor 0x1AF4) shows up with
+# decoded BARs and an MSI-X capability. BAR base addresses are firmware-
+# assigned (they vary with OVMF), so only base-independent facts are asserted:
+# the device identity, that a 64-bit MMIO BAR decoded, and the MSI-X table size.
+pci: enumerated 6 function(s)
+pci: 00:02.0 1af4:1000 class 02:00
+pci:   bar4 mmio
+pci:   msix capability, table size 4
+virtio: device 1af4:1000 found at 00:02.0
+
 Hello Rumicos
 execve works!
 mmap: demand-zero page reads 0 before any write - OK
