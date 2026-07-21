@@ -6,6 +6,7 @@ pub mod address;
 pub mod allocator;
 pub mod entry;
 pub mod init;
+pub mod mmio;
 pub mod table;
 pub mod tlb;
 

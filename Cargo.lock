@@ -138,5 +138,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-virtio"
+version = "0.1.0"
+dependencies = [
+ "kernel-apic",
+ "kernel-cpu",
+ "kernel-memory",
+ "kernel-paging",
+ "kernel-pci",
+ "kernel-sync",
+]
+
+[[package]]
 name = "xtask"
 version = "0.1.0"

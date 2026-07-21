@@ -11,6 +11,7 @@ members = [
     "crates/apic",
     "crates/pci",
     "crates/keyboard",
+    "crates/virtio",
     "crates/smp",
     "crates/sched",
     "kernel",
