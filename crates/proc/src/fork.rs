@@ -68,6 +68,7 @@ pub fn sys_fork() -> i64 {
             // The child has no children of its own yet.
             children: kernel_sync::SpinLock::new([0; crate::process::MAX_CHILDREN]),
             child_count: core::sync::atomic::AtomicU32::new(0),
+            child_exit_seq: core::sync::atomic::AtomicU32::new(0),
             wait_queue: kernel_sched::WaitQueue::new(),
         });
         // Zero the child's own children array element-by-element — the

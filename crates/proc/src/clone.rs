@@ -143,6 +143,7 @@ pub fn sys_clone(flags: u32, child_stack: u64) -> i64 {
             sig_frame: kernel_sync::SpinLock::new(None),
             children: kernel_sync::SpinLock::new([0; crate::process::MAX_CHILDREN]),
             child_count: core::sync::atomic::AtomicU32::new(0),
+            child_exit_seq: core::sync::atomic::AtomicU32::new(0),
             wait_queue: kernel_sched::WaitQueue::new(),
         });
         // Zero the child's own children array element-by-element (see

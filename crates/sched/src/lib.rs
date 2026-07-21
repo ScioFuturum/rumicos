@@ -17,7 +17,9 @@ pub mod waitqueue;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-pub use block::{thread_block, wake_all, wake_one, wake_one_and_yield, wake_one_from_irq};
+pub use block::{
+    thread_block, thread_block_if, wake_all, wake_one, wake_one_and_yield, wake_one_from_irq,
+};
 pub use futex::{FUTEX_BUCKETS, KMutex, KMutexGuard, futex_requeue, futex_wait, futex_wake};
 pub use percpu::{SchedCpu, sched_cpu};
 pub use queue::{BOOST_INTERVAL, MLFQ_LEVELS, MlfqQueue, timeslice};

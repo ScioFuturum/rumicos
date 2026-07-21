@@ -66,6 +66,13 @@ pub struct Process {
     /// Number of occupied `children` slots (a cached count for the fast
     /// `ECHILD` check in `sys_wait4` without scanning the whole array).
     pub child_count: AtomicU32,
+    /// Monotonic generation counter bumped by [`Process::exit`] on THIS
+    /// process's parent every time one of its children becomes a zombie.
+    /// `sys_wait4` samples it before scanning and re-checks it, under the
+    /// `wait_queue` lock, at the instant it decides to block — that closes
+    /// the lost-wakeup window where a child exits between the scan and the
+    /// enqueue (see `kernel_sched::thread_block_if` and `sys_wait4`).
+    pub child_exit_seq: AtomicU32,
     /// Queue the process blocks on in `sys_wait4` until a child exits and
     /// `Process::exit` wakes it. Embedded by value: `Process` is placement-
     /// written to a stable frame and never moved, so the `WaitQueue`'s
@@ -212,6 +219,7 @@ impl Process {
             sig_frame: kernel_sync::SpinLock::new(None),
             children: kernel_sync::SpinLock::new([0; MAX_CHILDREN]),
             child_count: AtomicU32::new(0),
+            child_exit_seq: AtomicU32::new(0),
             wait_queue: kernel_sched::WaitQueue::new(),
         };
         copy_name(&mut p.name, name);
@@ -285,8 +293,21 @@ impl Process {
             // us as a zombie first, which requires this function to have
             // already returned). raise touches only an atomic; wake_one
             // takes only the parent's wait-queue lock.
+            //
+            // Ordering that closes the wait4 lost-wakeup window: this child's
+            // `state = Zombie` (above) is published, then `child_exit_seq` is
+            // bumped, then `wake_one` acquires the parent's wait_queue lock.
+            // A parent in sys_wait4 that is about to block re-reads
+            // `child_exit_seq` UNDER that same wait_queue lock; because the
+            // bump here is ordered before wake_one's lock acquire, the parent
+            // either observes the new seq (and does not block) or is already
+            // enqueued when wake_one runs (and gets woken). Neither path
+            // sleeps through this exit.
             unsafe {
                 (*parent).pending.raise(crate::signal::SIGCHLD);
+                (*parent)
+                    .child_exit_seq
+                    .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
                 kernel_sched::wake_one(&(*parent).wait_queue);
             }
         }
@@ -348,6 +369,7 @@ pub(crate) fn test_process() -> Process {
         sig_frame: kernel_sync::SpinLock::new(None),
         children: kernel_sync::SpinLock::new([0; MAX_CHILDREN]),
         child_count: AtomicU32::new(0),
+        child_exit_seq: AtomicU32::new(0),
         wait_queue: kernel_sched::WaitQueue::new(),
     }
 }

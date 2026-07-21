@@ -95,6 +95,16 @@ pub fn sys_wait4(pid: i64, status_ptr: u64, options: u32, _rusage: u64) -> i64 {
             return ECHILD;
         }
 
+        // Sample the child-exit generation BEFORE scanning. `Process::exit`
+        // bumps this counter (then wakes) whenever a child of `parent`
+        // becomes a zombie. If a child exits at any point after this load —
+        // including in the window between the scan below and the block —
+        // the counter will differ from `seen_seq`, and the under-lock
+        // re-check in `thread_block_if` will decline to block. This is what
+        // closes the lost-wakeup window (see A1/A2 in the checkpoint).
+        // SAFETY: parent is live.
+        let seen_seq = unsafe { (*parent).child_exit_seq.load(Ordering::Acquire) };
+
         // SAFETY: parent is live; find_zombie takes and releases the
         // children lock and any ptable bucket lock internally.
         if let Some((child_pid, exit_code)) = unsafe { find_zombie(parent, pid) } {
@@ -121,19 +131,28 @@ pub fn sys_wait4(pid: i64, status_ptr: u64, options: u32, _rusage: u64) -> i64 {
             return 0;
         }
 
-        // Block until a child exits. Called with NO lock held (find_zombie
-        // released the children lock before returning None) — mandatory, or
-        // Process::exit's wake_one on another CPU would deadlock on it.
-        // Spurious/coalesced wakeups are fine: the loop re-checks.
-        // SAFETY: called from this thread's own syscall context, no locks
-        // held, interrupts in their normal syscall state.
+        // Block until a child exits, but only if no exit has been signalled
+        // since `seen_seq` was sampled. thread_block_if re-reads the counter
+        // UNDER the wait_queue lock — the same lock Process::exit's wake_one
+        // acquires — so an exit that races this decision is serialized: it
+        // either bumps the counter before we check (we don't block, we loop
+        // and reap) or finds our thread already enqueued (and wakes it). No
+        // lock is held across the block; find_zombie already released the
+        // children lock, and the closure only does a lock-free atomic load.
+        // SAFETY: this thread's own syscall context; no locks held; the
+        // closure takes no locks. parent is live.
         #[cfg(target_os = "none")]
         unsafe {
-            kernel_sched::thread_block(&(*parent).wait_queue)
-        };
+            kernel_sched::thread_block_if(&(*parent).wait_queue, || {
+                (*parent).child_exit_seq.load(Ordering::Acquire) == seen_seq
+            });
+        }
         // On host there is no scheduler to block on; avoid an infinite spin.
         #[cfg(not(target_os = "none"))]
-        return 0;
+        {
+            let _ = seen_seq;
+            return 0;
+        }
     }
 }
 
@@ -292,6 +311,47 @@ mod tests {
     #[test]
     fn encode_status_256_overflows_to_zero() {
         assert_eq!((encode_exit_status(256) >> 8) & 0xff, 0);
+    }
+
+    // ── lost-wakeup fix: the child-exit generation counter ────────────────
+    //
+    // The real race needs two CPUs and is unreachable while threads are
+    // pinned to CPU0, so these test the *decision logic* that closes the
+    // window: sys_wait4 samples `child_exit_seq` before scanning, and blocks
+    // only if it is unchanged when re-checked under the wait_queue lock
+    // (modelled here by the same load `thread_block_if`'s closure performs).
+
+    #[test]
+    fn block_predicate_is_true_when_no_child_exited_since_sample() {
+        let p = crate::process::test_process();
+        let seen = p.child_exit_seq.load(Ordering::Acquire);
+        // No exit happened → the block predicate (seq unchanged) holds, so
+        // the thread would legitimately block.
+        let should_block = p.child_exit_seq.load(Ordering::Acquire) == seen;
+        assert!(should_block, "with no exit, wait4 must be allowed to block");
+    }
+
+    #[test]
+    fn block_predicate_is_false_when_a_child_exited_in_the_window() {
+        let p = crate::process::test_process();
+        let seen = p.child_exit_seq.load(Ordering::Acquire);
+        // Simulate Process::exit bumping the parent's counter in the window
+        // between wait4's scan and its block decision.
+        p.child_exit_seq.fetch_add(1, Ordering::AcqRel);
+        // The under-lock re-check now sees a different generation → wait4
+        // declines to block, loops, and reaps instead. This is exactly the
+        // lost wakeup that the old thread_block() could not prevent.
+        let should_block = p.child_exit_seq.load(Ordering::Acquire) == seen;
+        assert!(
+            !should_block,
+            "an exit in the window must force wait4 NOT to block"
+        );
+    }
+
+    #[test]
+    fn generation_counter_starts_at_zero() {
+        let p = crate::process::test_process();
+        assert_eq!(p.child_exit_seq.load(Ordering::Acquire), 0);
     }
 
     #[test]
