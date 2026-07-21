@@ -100,7 +100,8 @@ impl NetDevice {
     /// descriptor is marked WRITE so the device fills it. Call once before
     /// `set_driver_ok`.
     ///
-    /// # Safety: queues and buffers are live.
+    /// # Safety
+    /// queues and buffers are live.
     pub unsafe fn fill_rx(&mut self) {
         for i in 0..RX_BUFFER_COUNT {
             // SAFETY: descriptor i and buffer i are within bounds; RX region
@@ -124,7 +125,8 @@ impl NetDevice {
     ///
     /// Returns `true` if the descriptor came back in the used ring.
     ///
-    /// # Safety: TX queue and buffer are live.
+    /// # Safety
+    /// TX queue and buffer are live.
     pub unsafe fn transmit(&mut self, frame: &[u8]) -> bool {
         let len = frame.len().min(ETH_FRAME_MAX);
         let buf_va = (DIRECT_MAP_BASE + self.tx_buf) as *mut u8;
@@ -154,13 +156,11 @@ impl NetDevice {
     /// Drain completed receive descriptors. For each, invoke `on_frame` with
     /// the frame bytes (past the 12-byte header) and re-post the buffer.
     ///
-    /// # Safety: RX queue and buffers are live.
+    /// # Safety
+    /// RX queue and buffers are live.
     pub unsafe fn poll_rx(&mut self, mut on_frame: impl FnMut(&[u8])) {
-        loop {
-            // SAFETY: RX used ring mapped.
-            let Some((id, total_len)) = (unsafe { self.rx.pop_used() }) else {
-                break;
-            };
+        // SAFETY: RX used ring mapped.
+        while let Some((id, total_len)) = unsafe { self.rx.pop_used() } {
             let idx = id as usize;
             if idx < RX_BUFFER_COUNT && total_len as usize >= NET_HDR_LEN {
                 let frame_len = (total_len as usize - NET_HDR_LEN).min(ETH_FRAME_MAX);

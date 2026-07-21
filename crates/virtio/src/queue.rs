@@ -173,7 +173,8 @@ impl Virtqueue {
 
     /// Read the device's current used-ring index (volatile).
     ///
-    /// # Safety: used region is mapped.
+    /// # Safety
+    /// used region is mapped.
     pub unsafe fn used_idx(&self) -> u16 {
         let idx_ptr = (self.used_va + USED_IDX_OFF) as *const u16;
         // SAFETY: used region is a live frame; acquire so subsequent reads of
@@ -186,7 +187,8 @@ impl Virtqueue {
     /// Pop the next completed used-ring element if the device has advanced
     /// past the driver's cursor. Returns `(descriptor_id, written_len)`.
     ///
-    /// # Safety: used region is mapped.
+    /// # Safety
+    /// used region is mapped.
     pub unsafe fn pop_used(&mut self) -> Option<(u32, u32)> {
         // SAFETY: used region mapped.
         let dev_idx = unsafe { self.used_idx() };
@@ -208,7 +210,8 @@ impl Virtqueue {
 
     /// Clear the available ring's "no interrupt" flag (we want interrupts).
     ///
-    /// # Safety: avail region is mapped.
+    /// # Safety
+    /// avail region is mapped.
     pub unsafe fn set_avail_flags(&self, flags: u16) {
         let p = (self.avail_va + AVAIL_FLAGS_OFF) as *mut u16;
         // SAFETY: avail region is a live frame.
@@ -217,7 +220,8 @@ impl Virtqueue {
 
     /// Read the used ring's flags (device sets bit 0 to suppress notifies).
     ///
-    /// # Safety: used region is mapped.
+    /// # Safety
+    /// used region is mapped.
     pub unsafe fn used_flags(&self) -> u16 {
         let p = (self.used_va + USED_FLAGS_OFF) as *const u16;
         // SAFETY: used region is a live frame.

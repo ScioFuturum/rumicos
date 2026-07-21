@@ -161,7 +161,8 @@ pub unsafe fn walk_virtio_caps(dev: &PciDevice) -> VirtioCaps {
 /// here may not be dword-aligned relative to our helper's needs, and byte
 /// reads are always safe).
 ///
-/// # Safety: ring-0 port I/O.
+/// # Safety
+/// ring-0 port I/O.
 unsafe fn read_cap_u32(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
     // SAFETY: four in-bounds ring-0 config byte reads.
     unsafe {
@@ -201,19 +202,22 @@ impl VirtioTransport {
 
     // ── common-cfg field access (all volatile) ──
 
-    /// # Safety: common region mapped.
+    /// # Safety
+    /// common region mapped.
     unsafe fn status(&self) -> u8 {
         // SAFETY: common region is mapped MMIO.
         unsafe { core::ptr::read_volatile((self.common_va + CFG_DEVICE_STATUS) as *const u8) }
     }
-    /// # Safety: common region mapped.
+    /// # Safety
+    /// common region mapped.
     unsafe fn set_status(&self, v: u8) {
         // SAFETY: common region is mapped MMIO.
         unsafe { core::ptr::write_volatile((self.common_va + CFG_DEVICE_STATUS) as *mut u8, v) };
     }
 
     /// Read one 32-bit device-feature word (`select` = 0 or 1).
-    /// # Safety: common region mapped.
+    /// # Safety
+    /// common region mapped.
     unsafe fn device_feature(&self, select: u32) -> u32 {
         // SAFETY: common region is mapped MMIO.
         unsafe {
@@ -226,7 +230,8 @@ impl VirtioTransport {
     }
 
     /// Write one 32-bit driver-feature word (`select` = 0 or 1).
-    /// # Safety: common region mapped.
+    /// # Safety
+    /// common region mapped.
     unsafe fn set_driver_feature(&self, select: u32, value: u32) {
         // SAFETY: common region is mapped MMIO.
         unsafe {
@@ -239,7 +244,8 @@ impl VirtioTransport {
     }
 
     /// Number of queues the device offers.
-    /// # Safety: common region mapped.
+    /// # Safety
+    /// common region mapped.
     pub unsafe fn num_queues(&self) -> u16 {
         // SAFETY: common region is mapped MMIO.
         unsafe { core::ptr::read_volatile((self.common_va + CFG_NUM_QUEUES) as *const u16) }
@@ -250,7 +256,8 @@ impl VirtioTransport {
     /// Returns `false` if the device is legacy-only (no VERSION_1) or rejects
     /// the feature set (clears FEATURES_OK) — the caller must not continue.
     ///
-    /// # Safety: common region mapped; call once at init before queue setup.
+    /// # Safety
+    /// common region mapped; call once at init before queue setup.
     pub unsafe fn negotiate(&self) -> bool {
         // SAFETY: all accesses target the mapped common-config MMIO.
         unsafe {
@@ -289,7 +296,8 @@ impl VirtioTransport {
     }
 
     /// Final step: tell the device the driver is ready (after queue setup).
-    /// # Safety: common region mapped; queues already configured.
+    /// # Safety
+    /// common region mapped; queues already configured.
     pub unsafe fn set_driver_ok(&self) {
         // SAFETY: common region is mapped MMIO.
         unsafe {
@@ -301,7 +309,8 @@ impl VirtioTransport {
     /// and enable it. Returns the device-reported `queue_size` and the
     /// `queue_notify_off` (both read after selecting the queue).
     ///
-    /// # Safety: common region mapped; `desc/avail/used` are live DMA frames.
+    /// # Safety
+    /// common region mapped; `desc/avail/used` are live DMA frames.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn setup_queue(
         &self,
@@ -329,7 +338,8 @@ impl VirtioTransport {
     }
 
     /// The device-reported size of queue `queue_index` (0 = queue absent).
-    /// # Safety: common region mapped.
+    /// # Safety
+    /// common region mapped.
     pub unsafe fn queue_size(&self, queue_index: u16) -> u16 {
         // SAFETY: common region is mapped MMIO.
         unsafe {
@@ -339,7 +349,8 @@ impl VirtioTransport {
     }
 
     /// Notify the device that queue `queue_index` has new buffers.
-    /// # Safety: notify region mapped; `notify_off` from `setup_queue`.
+    /// # Safety
+    /// notify region mapped; `notify_off` from `setup_queue`.
     pub unsafe fn notify_queue(&self, queue_index: u16, notify_off: u16) {
         let addr = notify_addr(self.notify_base_va, notify_off, self.notify_multiplier);
         // SAFETY: notify region is mapped MMIO.
@@ -347,7 +358,8 @@ impl VirtioTransport {
     }
 
     /// Read `n` bytes of device-specific config (e.g. the MAC) into `out`.
-    /// # Safety: device-config region mapped and at least `out.len()` long.
+    /// # Safety
+    /// device-config region mapped and at least `out.len()` long.
     pub unsafe fn read_device_config(&self, out: &mut [u8]) {
         for (i, b) in out.iter_mut().enumerate() {
             // SAFETY: caller guarantees the region covers these bytes.

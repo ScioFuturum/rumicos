@@ -699,6 +699,13 @@ fn qemu_common_args(cmd: &mut Command, machine: &str, cpu: &str, ovmf: &Path, es
     // PCI enumeration reports it, and the virtio driver (Part B) binds to it.
     // The user-mode netdev backend needs no host-side configuration.
     cmd.args(["-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"]);
+    // Dump all traffic on that netdev to a pcap, so the virtio-net TX
+    // self-test can be verified from the host: a transmitted frame lands in
+    // this file (24-byte pcap global header + 16-byte record header + frame).
+    cmd.args([
+        "-object",
+        "filter-dump,id=netdump,netdev=n0,file=target/virtio-capture.pcap",
+    ]);
 }
 
 /// Locate `qemu-system-x86_64` via PATH, falling back to the default

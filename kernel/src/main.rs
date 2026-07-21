@@ -136,6 +136,32 @@ fn kernel_main() {
     // I/O only (no MMIO, no I/O APIC); MSI-X delivers straight to a LAPIC.
     pci_report();
 
+    // ── virtio-net (Part B) ───────────────────────────────────────────────
+    // Bind the driver to the enumerated device, run the transmit self-test,
+    // and register the RX completion handler. Must run before any user
+    // address space is created: mapping the device BARs adds kernel-half
+    // page-table entries that later address spaces inherit by sharing
+    // (see kernel_paging::mmio::map_mmio_region).
+    kernel_cpu::register_handler(VIRTIO_RX_VECTOR, virtio_rx_handler);
+    // SAFETY: PCI is enumerated; BSP boot context, no user address space yet.
+    match unsafe { kernel_virtio::init(bsp_apic_id, VIRTIO_RX_VECTOR) } {
+        Some(r) => {
+            boot_log(format_args!(
+                "virtio-net: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} (device {:04x})\r\n",
+                r.mac[0], r.mac[1], r.mac[2], r.mac[3], r.mac[4], r.mac[5], r.device_id,
+            ));
+            boot_log(format_args!(
+                "virtio-net: tx self-test {}\r\n",
+                if r.tx_ok {
+                    "OK - frame returned in used ring"
+                } else {
+                    "FAIL - no completion"
+                },
+            ));
+        }
+        None => boot_log(format_args!("virtio-net: no device or init failed\r\n")),
+    }
+
     kernel_sched::init(kernel_smp::online_count());
     // Reschedule kick: when kernel-sched parks a thread on a REMOTE CPU's
     // run queue, broadcast RESCHED_VECTOR so idle APs (which have no
@@ -286,6 +312,28 @@ fn pci_report() {
 /// Reschedule-kick IPI vector. 0x20 is the timer, 0xfc the TLB shootdown
 /// (see kernel_proc::shootdown); 0xfb is otherwise unused.
 const RESCHED_VECTOR: u8 = 0xfb;
+
+/// virtio-net RX-completion MSI-X vector. Clear of 0x20 (timer), 0x21
+/// (keyboard), 0x80 (syscall INT), 0xfb/0xfc (IPIs) and 0xff (spurious).
+const VIRTIO_RX_VECTOR: u8 = 0x40;
+
+/// MSI-X handler for virtio-net receive completions. EOI first (matching
+/// every other IRQ handler here), then drain the RX ring — printing each
+/// frame's length and first bytes, which is all "processing" means until the
+/// network stack arrives. Never blocks or schedules.
+fn virtio_rx_handler(_frame: &mut kernel_cpu::InterruptFrame, _vec: u8) {
+    kernel_apic::eoi();
+    // SAFETY: interrupt context on the BSP; the device was initialized at boot.
+    unsafe {
+        kernel_virtio::rx_poll(|frame| {
+            boot_log(format_args!("virtio-net: rx {} bytes:", frame.len()));
+            for b in frame.iter().take(16) {
+                boot_log(format_args!(" {:02x}", b));
+            }
+            boot_log(format_args!("\r\n"));
+        });
+    }
+}
 
 /// Broadcast the reschedule kick to every other CPU. Registered with
 /// kernel-sched as its remote-kick hook. Broadcasting (rather than

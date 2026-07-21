@@ -19,6 +19,7 @@ dependencies = [
  "kernel-sched",
  "kernel-smp",
  "kernel-sync",
+ "kernel-virtio",
 ]
 
 [[package]]

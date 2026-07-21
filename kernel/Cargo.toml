@@ -25,3 +25,4 @@ kernel-keyboard = { path = "../crates/keyboard" }
 kernel-smp = { path = "../crates/smp" }
 kernel-sched = { path = "../crates/sched" }
     kernel-fs = { path = "../crates/fs" }
+kernel-virtio = { path = "../crates/virtio" }

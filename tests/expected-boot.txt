@@ -32,6 +32,13 @@ pci:   bar4 mmio
 pci:   msix capability, table size 4
 virtio: device 1af4:1000 found at 00:02.0
 
+# virtio-net driver (Part B): the driver binds to that device, reads its MAC
+# from device-config (QEMU's deterministic default 52:54:00:12:34:56), and
+# transmits one ARP probe, confirmed by the descriptor returning in the TX
+# used ring. The frame is also captured to target/virtio-capture.pcap.
+virtio-net: MAC 52:54:00:12:34:56
+virtio-net: tx self-test OK
+
 Hello Rumicos
 execve works!
 mmap: demand-zero page reads 0 before any write - OK
