@@ -27,6 +27,11 @@ pub unsafe extern "C" fn ap_entry_rust() -> ! {
     // SAFETY: AP bring-up, before this CPU runs any user thread; the
     // trampoline's CR3 low bits are zero so PCIDE can be set.
     unsafe { kernel_paging::tlb::apply_bsp_cr4_on_ap() };
+    // CR4.OSXSAVE was just mirrored from the BSP; XCR0 is not part of CR4, so
+    // program it on this AP too or its XSAVE/XRSTOR in the context switch
+    // would fault. Enables exactly x87 + SSE, matching the BSP.
+    // SAFETY: AP bring-up, CR4.OSXSAVE set by the mirror above.
+    unsafe { kernel_arch_x86_64::xsave::enable_xcr0_x87_sse() };
 
     cpuinfo::set_cpu_online(cpu_id);
     fence(Ordering::SeqCst);

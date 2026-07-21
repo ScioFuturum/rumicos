@@ -25,6 +25,60 @@ const _: () = assert!(
     "KSTACK_SIZE must be 16-byte aligned"
 );
 
+/// Per-thread XSAVE area size. 1 KiB — comfortably above the 576 bytes the
+/// x87+SSE XSAVE image needs ([`kernel_arch_x86_64::xsave::XSAVE_X87_SSE_SIZE`])
+/// and a multiple of 64, which XSAVE requires of the area's alignment.
+pub const FPU_AREA_SIZE: usize = 1024;
+const _: () = assert!(
+    FPU_AREA_SIZE >= kernel_arch_x86_64::xsave::XSAVE_X87_SSE_SIZE,
+    "FPU area must fit the x87+SSE XSAVE image"
+);
+const _: () = assert!(FPU_AREA_SIZE.is_multiple_of(64), "XSAVE area must be 64-byte aligned");
+
+/// A 64-byte-aligned per-thread XSAVE save area.
+///
+/// XSAVE/XRSTOR require the area's ABSOLUTE address to be 64-byte aligned.
+/// `Thread` is `repr(align(64))` and placed at a 64-aligned address, and this
+/// field is itself `align(64)`, so its absolute address is always aligned.
+#[repr(C, align(64))]
+pub struct FpuArea {
+    bytes: [u8; FPU_AREA_SIZE],
+}
+
+impl FpuArea {
+    /// A freshly-initialized area. `XRSTOR` from it yields default FPU/SSE
+    /// state: x87 reset, XMM registers zeroed, MXCSR = 0x1F80.
+    ///
+    /// The area is zeroed except the legacy MXCSR field (offset 24). XRSTOR
+    /// loads MXCSR from the area even when the SSE component's XSTATE_BV bit
+    /// is 0, so it must hold a valid value (0x1F80, all exceptions masked),
+    /// not zero (which would unmask every SIMD exception). XSTATE_BV in the
+    /// XSAVE header (offset 512) is left 0, so XRSTOR init-optimizes the x87
+    /// and SSE components rather than loading them from the (empty) area.
+    pub const fn new() -> Self {
+        let mut bytes = [0u8; FPU_AREA_SIZE];
+        bytes[24] = 0x80; // MXCSR low byte
+        bytes[25] = 0x1f; // MXCSR high byte → 0x1F80
+        Self { bytes }
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.bytes.as_ptr()
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.bytes.as_mut_ptr()
+    }
+}
+
+impl Default for FpuArea {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[repr(C, align(64))]
 pub struct Thread {
     pub id: ThreadId,
@@ -35,6 +89,10 @@ pub struct Thread {
     pub kstack_top: u64,
     pub kstack_phys: u64,
     pub context: Context,
+    /// Extended (x87/SSE) state, saved/restored eagerly on every context
+    /// switch (see `kernel_sched::schedule`). Last field so it cannot shift
+    /// `context`'s offset, which `switch_context`'s asm depends on.
+    pub fpu: FpuArea,
     _pad: [u8; 0],
 }
 
@@ -61,6 +119,7 @@ impl Thread {
             kstack_top,
             kstack_phys: stack_phys.as_u64(),
             context: Context::new_kernel(entry, kstack_top),
+            fpu: FpuArea::new(),
             _pad: [],
         }
     }
@@ -188,6 +247,7 @@ pub(crate) fn test_thread(id: ThreadId, priority: u8, state: ThreadState) -> Thr
         kstack_top: 0,
         kstack_phys: 0,
         context: Context::zero(),
+        fpu: FpuArea::new(),
         _pad: [],
     }
 }

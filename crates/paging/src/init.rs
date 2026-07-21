@@ -98,6 +98,14 @@ impl PagingInit {
             serial_marker(b'b');
             let mut new_cr4 = cr4 | (1u64 << 7); // PGE
 
+            // FPU/SSE + XSAVE: OSFXSR|OSXMMEXCPT|OSXSAVE. Set here (not in a
+            // later per-CPU step) so the value is captured in the CR4 that
+            // paging init publishes; APs mirror it verbatim via
+            // apply_bsp_cr4_on_ap, which does a full CR4 overwrite and would
+            // otherwise clear a bit an AP had set on its own. XCR0 (below) is
+            // NOT part of CR4, so it is programmed per CPU separately.
+            new_cr4 |= kernel_arch_x86_64::xsave::CR4_FPU_BITS;
+
             if self.features.pcid {
                 let cr3 = tlb::read_cr3();
                 serial_marker(b'c');
@@ -111,6 +119,22 @@ impl PagingInit {
 
             write_cr4(new_cr4);
             serial_marker(b'd');
+
+            // Now that CR4.OSXSAVE is set, program XCR0 (x87 + SSE) on the
+            // BSP and confirm the fixed per-thread save area is large enough
+            // for what the CPU reports for those features.
+            // OSXSAVE was just set in CR4 above, so XSETBV/CPUID.0DH are now
+            // valid. (No kernel-sched reference here — that would cycle the
+            // crate graph; kernel-sched compile-asserts its FPU_AREA_SIZE >=
+            // XSAVE_X87_SSE_SIZE, and we confirm the hardware requirement for
+            // x87+SSE is what we sized for.) These calls sit in the enclosing
+            // `unsafe` block, so no inner one is needed.
+            kernel_arch_x86_64::xsave::enable_xcr0_x87_sse();
+            let need = kernel_arch_x86_64::xsave::xsave_area_size() as usize;
+            assert!(
+                need <= kernel_arch_x86_64::xsave::XSAVE_X87_SSE_SIZE,
+                "CPU reports a larger x87+SSE XSAVE area than 576 bytes"
+            );
 
             // Publish what was actually enabled so TLB helpers and
             // kernel-proc's PCID plumbing can adapt: QEMU's TCG (the

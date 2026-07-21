@@ -59,6 +59,13 @@ wait: child exited with code 42 - OK
 ~parent: shared_byte inherited as 0x42 - OK
 ~parent: CoW write resolved, shared_byte='P' - OK
 
+# FPU/SSE state across context switch (Part B): init2's parent seeds xmm0..3
+# with a sentinel before forking; the child loads a different pattern and
+# runs concurrently. After wait4 (which forced a switch away and back), the
+# parent confirms its xmm bytes survived — proving the scheduler saves and
+# restores FPU state per thread. Without XSAVE/XRSTOR this reads FAIL.
+fpu: xmm survived context switch - OK
+
 # The userspace shell: init2's parent path reaps its CoW child, then
 # execve()s /bin/shell, whose self-test drives real fork/pipe/dup2/execve
 # /wait4 pipelines through the same parse+exec code the interactive REPL

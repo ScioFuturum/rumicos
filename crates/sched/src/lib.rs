@@ -24,7 +24,10 @@ pub use futex::{FUTEX_BUCKETS, KMutex, KMutexGuard, futex_requeue, futex_wait, f
 pub use percpu::{SchedCpu, sched_cpu};
 pub use queue::{BOOST_INTERVAL, MLFQ_LEVELS, MlfqQueue, timeslice};
 pub use steal::{busiest_cpu, least_loaded_cpu, try_steal};
-pub use thread::{Context, KSTACK_ORDER, KSTACK_SIZE, Thread, ThreadId, ThreadState, alloc_tid};
+pub use thread::{
+    Context, FPU_AREA_SIZE, FpuArea, KSTACK_ORDER, KSTACK_SIZE, Thread, ThreadId, ThreadState,
+    alloc_tid,
+};
 pub use waitqueue::{WaitNode, WaitQueue};
 
 pub static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
@@ -146,6 +149,27 @@ pub unsafe fn schedule(cpu_id: u32) {
 
     // Lock released - switch_context must follow immediately.
     run_context_switch_hook(next, cpu_id);
+
+    // Eager FPU/SSE save-restore. Save the OUTGOING thread's extended state
+    // and load the INCOMING thread's — both BEFORE the integer-register
+    // switch. Doing it here (not after switch_context returns) is what makes
+    // it correct for a first run: switch_context jumps straight to a new
+    // thread's entry point rather than returning, so any restore placed
+    // "after the switch" would never execute for that thread. The kernel is
+    // soft-float, so nothing between here and the switch touches xmm/x87, and
+    // XSAVE/XRSTOR themselves only move state. See docs: Part B.
+    #[cfg(target_os = "none")]
+    {
+        const FPU_MASK: u64 = kernel_arch_x86_64::xsave::XCR0_X87_SSE;
+        if !cur.is_null() {
+            // SAFETY: cur is a live TCB, FPU is enabled on this CPU, and its
+            // fpu area is 64-byte aligned by construction.
+            unsafe { kernel_arch_x86_64::xsave::xsave64((*cur).fpu.as_mut_ptr(), FPU_MASK) };
+        }
+        // SAFETY: next is a live TCB with an initialized, 64-aligned fpu area.
+        unsafe { kernel_arch_x86_64::xsave::xrstor64((*next).fpu.as_ptr(), FPU_MASK) };
+    }
+
     if cur.is_null() {
         // SAFETY: `next` is a valid runnable TCB and no previous context exists.
         unsafe { switch::switch_first(next) };

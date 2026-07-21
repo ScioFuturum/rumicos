@@ -516,6 +516,19 @@ _start:
     ; check below verifies survived the share.
     mov  byte [rel shared_byte], 0x42
 
+    ; ── Part B: FPU/SSE state across context switch ──────────────────────
+    ; Seed xmm0..3 with the parent's sentinel BEFORE forking. The child
+    ; (below) loads a DIFFERENT pattern; after the child has run and this
+    ; parent has been switched away and back (guaranteed by wait4), we read
+    ; xmm back and confirm the parent's values survived — i.e. the kernel
+    ; saves/restores FPU state per thread. movaps is legal in ring 3 because
+    ; the kernel set CR4.OSFXSR/OSXSAVE and programmed XCR0.
+    lea  rax, [rel fpu_sentinel_p]
+    movaps xmm0, [rax]
+    movaps xmm1, [rax + 16]
+    movaps xmm2, [rax + 32]
+    movaps xmm3, [rax + 48]
+
     mov  eax, 57              ; SYS_FORK
     syscall                   ; parent: rax = child pid; child: rax = 0
     cmp  rax, 0
@@ -577,6 +590,39 @@ _start:
     mov  eax, 61              ; SYS_WAIT4
     syscall
 
+    ; ── Part B check: did the parent's xmm sentinel survive? ─────────────
+    ; The child ran with a different xmm pattern and has now exited; wait4
+    ; above guaranteed this parent was switched out and back at least once.
+    ; Store xmm0..3 and compare all 64 bytes against the parent's sentinel.
+    lea  rax, [rel fpu_readback]
+    movaps [rax], xmm0
+    movaps [rax + 16], xmm1
+    movaps [rax + 32], xmm2
+    movaps [rax + 48], xmm3
+    lea  r8, [rel fpu_readback]
+    lea  r9, [rel fpu_sentinel_p]
+    xor  ecx, ecx
+.fpu_cmp_loop:
+    mov  r10b, [r8 + rcx]
+    cmp  r10b, [r9 + rcx]
+    jne  .fpu_fail
+    inc  ecx
+    cmp  ecx, 64
+    jne  .fpu_cmp_loop
+    mov  edi, 1
+    lea  rsi, [rel fpu_ok_msg]
+    mov  edx, fpu_ok_len
+    mov  eax, 1
+    syscall
+    jmp  .fpu_done
+.fpu_fail:
+    mov  edi, 1
+    lea  rsi, [rel fpu_fail_msg]
+    mov  edx, fpu_fail_len
+    mov  eax, 1
+    syscall
+.fpu_done:
+
     ; Hand the boot over to the userspace shell (/bin/shell from initrd).
     ; On success this never returns; the shell's self-test lines continue
     ; the expected-boot transcript.
@@ -599,6 +645,16 @@ _start:
 
 ; ───────────────────────── child path ───────────────────────────────────
 .child_path:
+    ; Part B: overwrite the hardware xmm registers with the CHILD's distinct
+    ; pattern. While this child runs, the physical xmm regs hold these bytes;
+    ; if the kernel did NOT save/restore FPU state per thread, the parent
+    ; would read these back instead of its own sentinel.
+    lea  rax, [rel fpu_sentinel_c]
+    movaps xmm0, [rax]
+    movaps xmm1, [rax + 16]
+    movaps xmm2, [rax + 32]
+    movaps xmm3, [rax + 48]
+
     ; Same inherited-content check, independently, on the child's own copy
     ; of the page (which may be the original frame or a freshly copied one
     ; depending on fault order — both must read 0x42 here either way).
@@ -733,6 +789,11 @@ wait_fail_len              equ $ - wait_fail_msg
 shell_fail_msg:            db "init2: execve(/bin/shell) failed - FAIL", 10
 shell_fail_len             equ $ - shell_fail_msg
 
+fpu_ok_msg:                db "fpu: xmm survived context switch - OK", 10
+fpu_ok_len                 equ $ - fpu_ok_msg
+fpu_fail_msg:              db "fpu: xmm CLOBBERED across context switch - FAIL", 10
+fpu_fail_len               equ $ - fpu_fail_msg
+
 name_ok_msg:               db "fork: child name intact after copy - OK", 10
 name_ok_len                equ $ - name_ok_msg
 name_fail_msg:             db "fork: child name SHREDDED by miscompile - FAIL", 10
@@ -792,6 +853,24 @@ name_buf: times 16 db 0
 shell_path: db "/bin/shell", 0
 align 8
 shell_argv: dq shell_path, 0
+
+; Part B: SSE sentinels for the FPU-context-switch test. 64 bytes each =
+; xmm0..3, 16-byte aligned for movaps. The parent loads a distinct per-byte
+; pattern, the child loads all-0xC7; the parent's readback must equal its own
+; sentinel or the context switch lost FPU state.
+align 16
+fpu_sentinel_p: db 0x51,0x52,0x53,0x54,0x55,0x56,0x57,0x58
+                db 0x59,0x5a,0x5b,0x5c,0x5d,0x5e,0x5f,0x60
+                db 0x61,0x62,0x63,0x64,0x65,0x66,0x67,0x68
+                db 0x69,0x6a,0x6b,0x6c,0x6d,0x6e,0x6f,0x70
+                db 0x71,0x72,0x73,0x74,0x75,0x76,0x77,0x78
+                db 0x79,0x7a,0x7b,0x7c,0x7d,0x7e,0x7f,0x80
+                db 0x81,0x82,0x83,0x84,0x85,0x86,0x87,0x88
+                db 0x89,0x8a,0x8b,0x8c,0x8d,0x8e,0x8f,0x90
+align 16
+fpu_sentinel_c: times 64 db 0xC7
+align 16
+fpu_readback:   times 64 db 0
 
 ; pipe() writes the two fd numbers here: [0]=read end, [1]=write end.
 align 8
