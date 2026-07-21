@@ -189,13 +189,55 @@ pub unsafe fn alloc_kernel_thread_raw(
     unsafe { thread::alloc_thread_raw(id, entry, priority) }
 }
 
+/// Hook that pokes remote CPUs after a thread lands on one of their run
+/// queues (registered by the kernel crate: a broadcast reschedule IPI).
+///
+/// Load-bearing, not an optimization: only the BSP has a periodic timer,
+/// and an idle AP parks in `sti; hlt` — it drains its own run queue only
+/// when an interrupt arrives. Before this hook existed, a thread enqueued
+/// onto an idle AP could sit there FOREVER: the AP never woke to pop it,
+/// and the BSP's `try_steal` never fired because its own queue always
+/// holds the `kidle` kernel thread (`schedule` only steals when the local
+/// pop comes up empty). A shell pipeline's second stage landed exactly
+/// there and starved.
+static KICK_REMOTE_HOOK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Register the remote-CPU kick (see [`KICK_REMOTE_HOOK`]). Called once at
+/// boot by the kernel crate after the APs are online.
+pub fn register_kick_hook(hook: fn()) {
+    KICK_REMOTE_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn kick_remote_cpus() {
+    let hook = KICK_REMOTE_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if hook != 0 {
+        // SAFETY: register_kick_hook only ever stores a `fn()`.
+        let hook: fn() = unsafe { core::mem::transmute(hook) };
+        hook();
+    }
+}
+
 pub fn enqueue_thread(thread: *mut Thread, priority: usize) {
-    let target_cpu = least_loaded_cpu();
+    // Pin every new thread to the BSP's queue for now. This codifies what
+    // was silently true anyway: only the BSP has a periodic timer, so only
+    // its queue is reliably drained. Spreading via least_loaded_cpu()
+    // parked threads on idle APs — and the FIRST time an AP actually ran a
+    // user thread (this checkpoint's shell pipeline) it exposed a stack of
+    // latent SMP holes (AP LAPICs were software-disabled, so neither their
+    // timers nor reschedule IPIs ever fired; with those fixed, true
+    // concurrent scheduling then hit further unsolved races). Genuinely
+    // spreading user threads across CPUs is deliberate follow-up work —
+    // see docs/shell-checkpoint.md "Known limitations".
+    let target_cpu = 0;
     let queued = sched_cpu(target_cpu)
         .lock()
         .run_queue
         .push(thread, priority);
     assert!(queued, "scheduler run queue full");
+    if target_cpu != current_cpu_id() {
+        kick_remote_cpus();
+    }
 }
 
 pub fn current_thread() -> *mut Thread {

@@ -436,6 +436,15 @@ impl PagingInit {
             lfence();
         }
         self.enable_supervisor_protections();
+        // Publish the BSP's final CR4 so APs can mirror it. The AP
+        // trampoline only sets CR4.PAE; without this, APs ran with
+        // SMAP/SMEP/PGE/PCIDE all clear while the kernel's user-copy paths
+        // unconditionally execute STAC/CLAC — which #UD on a CPU whose
+        // CR4.SMAP is 0. That stayed invisible for as long as every user
+        // thread happened to be scheduled onto the BSP; the first pipeline
+        // stage placed on an idle AP died silently in its first
+        // user-memory-touching syscall.
+        crate::tlb::publish_bsp_cr4(unsafe { read_cr4() });
         unsafe { serial_marker(b'7') };
     }
 }

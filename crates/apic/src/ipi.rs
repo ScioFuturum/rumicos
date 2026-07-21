@@ -88,7 +88,7 @@ mod tests {
             IpiDest::ApicId(id) => (id as u64) << DEST_FIELD_SHIFT,
             _ => unreachable!(),
         };
-        assert_eq!(dest_bits, 0x0f00_0000_00);
+        assert_eq!(dest_bits, 0x0f_0000_0000);
         // No shorthand bits set.
         assert_eq!(dest_bits & (0b11 << 18), 0);
     }

@@ -25,6 +25,7 @@ fn main() -> ExitCode {
         "qemu" => qemu(args.collect()),
         "qemu-test" => qemu_test(),
         "mkinitrd" => mkinitrd(),
+        "build-userspace" => build_userspace(),
         _ => help(),
     };
 
@@ -63,30 +64,114 @@ fn help() -> Result<(), String> {
     println!("  pgo          instrumented build, workload hook, optimized rebuild");
     println!("  qemu [elf]   boot the kernel via Limine/UEFI in QEMU q35 (KVM/WHPX with TCG fallback)");
     println!("  qemu-test    boot in QEMU headless and check serial output against tests/expected-boot.txt");
-    println!("  mkinitrd     pack initrd/initrd.cpio from init2.elf + testfile.txt (cpio-free)");
+    println!("  mkinitrd     build userspace + pack initrd/initrd.cpio (cpio-free)");
+    println!("  build-userspace  build /bin/shell, /bin/echo, /bin/cat for x86_64-unknown-none");
     Ok(())
 }
 
 // ─── initrd (newc CPIO) packing ────────────────────────────────────────────
 
-/// `cargo xtask mkinitrd`: repack `initrd/initrd.cpio` from `init2.elf` and
-/// `testfile.txt`, in the exact newc (SVR4, no-CRC) layout
-/// `crates/fs/src/cpio.rs` parses and byte-for-byte identical to what
-/// `printf 'init2.elf\ntestfile.txt\n' | cpio -o --format=newc --quiet`
-/// produces. Exists because this project's Windows dev box has neither
-/// `cpio` nor a real `python3` (the Store stub is inert) — see
-/// initrd/Makefile and the memory `windows-toolchain-quirks`.
+/// The userspace link flags, which MUST be passed through the RUSTFLAGS
+/// *environment variable* rather than a `userspace/.cargo/config.toml`.
+///
+/// Cargo merges config files up the directory tree, so a nested config's
+/// `rustflags` are appended to — not substituted for — the repo root's,
+/// which pin `-C link-arg=-Tkernel/linker/x86_64.ld` (the KERNEL's
+/// higher-half linker script) onto every x86_64-unknown-none build. Only
+/// the RUSTFLAGS env var replaces config rustflags outright.
+///
+/// * `relocation-model=static` — the ELF loader rejects anything whose
+///   `e_type != ET_EXEC` (`ElfError::NotExecutable`), i.e. no PIE.
+/// * `--image-base=0x400000` — pins the image where init.asm/init2.asm
+///   already live. The historical GNU-ld recipe spelled this
+///   `-Ttext-segment=0x400000`; rust-lld rejects that spelling.
+/// * `-z noseparate-code` — same intent as the NASM recipe's flag: keep the
+///   program-header count down. The loader caps `e_phnum` at 8.
+/// * `-z norelro` / `--no-eh-frame-hdr` — drop two phdrs nothing uses in a
+///   static, non-unwinding image.
+///
+/// Deliberately no `+sse*`: x86_64-unknown-none defaults to soft-float with
+/// no SSE, the configuration that is NOT affected by the rustc 1.97.0
+/// aggregate-copy miscompile (docs/miscompile-audit.md).
+#[cfg(not(target_os = "none"))]
+const USERSPACE_RUSTFLAGS: &str = "-C relocation-model=static \
+     -C link-arg=--image-base=0x400000 \
+     -C link-arg=-z -C link-arg=noseparate-code \
+     -C link-arg=-z -C link-arg=norelro \
+     -C link-arg=--no-eh-frame-hdr";
+
+/// `cargo xtask build-userspace`: build /bin/shell, /bin/echo and /bin/cat
+/// for x86_64-unknown-none. See [`USERSPACE_RUSTFLAGS`] for why the flags
+/// go through the environment.
+#[cfg(not(target_os = "none"))]
+fn build_userspace() -> Result<(), String> {
+    let mut cmd = cargo();
+    cmd.current_dir("userspace")
+        .env("RUSTFLAGS", USERSPACE_RUSTFLAGS)
+        .args([
+            "build",
+            "--target",
+            "x86_64-unknown-none",
+            "--release",
+            "-p",
+            "uecho",
+            "-p",
+            "ucat",
+            "-p",
+            "shell",
+            "--features",
+            "shell/bin",
+        ]);
+    run(&mut cmd)
+}
+
+/// `cargo xtask mkinitrd`: rebuild the userspace binaries and repack
+/// `initrd/initrd.cpio` in the newc (SVR4, no-CRC) layout
+/// `crates/fs/src/cpio.rs` parses. Exists because this project's Windows dev
+/// box has neither `cpio` nor a real `python3` (the Store stub is inert) —
+/// see initrd/Makefile and the memory `windows-toolchain-quirks`.
+///
+/// Archive layout:
+/// * `tmp/` — an empty directory. `sys_open`'s O_CREAT path creates a file
+///   only inside an EXISTING parent, so the shell's `> /tmp/shellout.txt`
+///   needs this to be here.
+/// * `bin/{shell,echo,cat}` — the unpacker's `ensure_path` builds the `bin`
+///   directory automatically from the `/` in these names.
+/// * `init2.elf`, `testfile.txt` — the pre-existing demo payload.
 #[cfg(not(target_os = "none"))]
 fn mkinitrd() -> Result<(), String> {
+    build_userspace()?;
+
     let dir = Path::new("initrd");
-    let members = ["init2.elf", "testfile.txt"];
+    let user = Path::new("userspace/target/x86_64-unknown-none/release");
     let mut archive: Vec<u8> = Vec::new();
-    for member in members {
-        let path = dir.join(member);
-        let data = std::fs::read(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
-        cpio_newc_record(&mut archive, member.as_bytes(), 0o100644, &data);
+
+    // Directories first, so the unpacker has them before any file lands in
+    // one (it would create them implicitly anyway, but an explicit entry is
+    // what makes an EMPTY directory like /tmp exist at all).
+    for d in ["tmp", "bin"] {
+        cpio_newc_record(&mut archive, d.as_bytes(), 0o040755, &[]);
     }
+
+    // (name inside the archive, file on disk, mode)
+    let members: [(&str, std::path::PathBuf, u32); 5] = [
+        ("init2.elf", dir.join("init2.elf"), 0o100755),
+        ("testfile.txt", dir.join("testfile.txt"), 0o100644),
+        ("bin/shell", user.join("shell"), 0o100755),
+        ("bin/echo", user.join("echo"), 0o100755),
+        ("bin/cat", user.join("cat"), 0o100755),
+    ];
+    for (name, src, mode) in members {
+        let data = std::fs::read(&src).map_err(|e| {
+            format!(
+                "read {}: {e} (run `cargo xtask build-userspace` first?)",
+                src.display()
+            )
+        })?;
+        cpio_newc_record(&mut archive, name.as_bytes(), mode, &data);
+        println!("  {name}: {} bytes", data.len());
+    }
+
     // Terminating record: name "TRAILER!!!", mode 0, no data.
     cpio_newc_record(&mut archive, b"TRAILER!!!", 0, &[]);
 
@@ -147,6 +232,13 @@ fn cargo_check() -> Result<(), String> {
 
 #[cfg(not(target_os = "none"))]
 fn cargo_kernel(release: bool) -> Result<(), String> {
+    // The kernel embeds initrd/initrd.cpio via include_bytes!, and the
+    // initrd now carries the userspace binaries — so it must be rebuilt and
+    // repacked BEFORE the kernel, or a boot test could silently run a stale
+    // /bin/shell. cargo's include_bytes! dependency tracking then rebuilds
+    // the kernel whenever the archive actually changed.
+    mkinitrd()?;
+
     let mut cmd = cargo();
     cmd.args(["build", "-p", "kernel", "--target", "x86_64-unknown-none"]);
     if release {

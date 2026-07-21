@@ -39,3 +39,20 @@ wait: child exited with code 42 - OK
 ~child: CoW write resolved, shared_byte='C' - OK
 ~parent: shared_byte inherited as 0x42 - OK
 ~parent: CoW write resolved, shared_byte='P' - OK
+
+# The userspace shell: init2's parent path reaps its CoW child, then
+# execve()s /bin/shell, whose self-test drives real fork/pipe/dup2/execve
+# /wait4 pipelines through the same parse+exec code the interactive REPL
+# uses (see userspace/shell/src/selftest.rs). Each command's output lands
+# before its "shell: ok" line because the shell wait4()s every stage first.
+hello pipeline
+shell: ok echo
+hello
+shell: ok pipe echo|cat
+piped twice
+shell: ok pipe echo|cat|cat
+shell: ok redirect > file
+shell: ok redirected file contents match
+redirected
+shell: ok redirect < file
+shell: self-test complete

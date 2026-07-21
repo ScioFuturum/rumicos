@@ -165,6 +165,24 @@ impl AddressSpace {
             unsafe {
                 kernel_memory::free_frame(kernel_memory::PhysAddr::new(pml4_phys));
             }
+            // Return the PCID to the allocator, or every fork()+execve()
+            // pair leaks two of the 4096 and a long-lived shell panics with
+            // "PCID space exhausted" after ~2k commands. free() ignores
+            // id 0 (the PCIDE-disabled case). Stale-TLB hazard on reuse:
+            // a CR3 load with bit 63 clear (make_cr3(.., false), the only
+            // form this kernel uses) flushes the PCID's local entries, and
+            // do_execve additionally runs flush_all_pcids after activate;
+            // a REMOTE CPU's stale entries for a recycled PCID remain the
+            // same theoretical hazard as the PCID-generation wrap already
+            // documented in do_execve — accepted with the same rationale.
+            #[cfg(target_os = "none")]
+            {
+                let pcid = unsafe { (*ptr).pcid };
+                PCID_ALLOCATOR.free(kernel_memory::Pcid {
+                    id: pcid,
+                    generation: 0,
+                });
+            }
             let own_frame = (ptr as u64) - DIRECT_MAP_BASE;
             // SAFETY: ptr is no longer live/aliased past this point.
             unsafe {
@@ -689,23 +707,31 @@ impl AddressSpace {
         // TOCTOU race: a sibling process on another CPU could be
         // resolving its own CoW fault on this exact physical frame at
         // the same time.
-        if crate::cow::cow_release(old_frame) {
-            // We were the sole remaining owner — reuse the frame in place,
-            // no copy needed.
-            *entry = old.with_flags(new_flags);
-            // SAFETY: this AddressSpace may be CLONE_VM-shared with a
-            // thread on another CPU right now; shootdown_page flushes
-            // locally first, then IPIs any remote CPU in active_cpus.
-            unsafe { crate::shootdown::shootdown_page(self.active_cpus.snapshot(), page) };
-            return true;
-        }
-
-        let new_frame = kernel_memory::alloc_frame();
-        unsafe {
-            crate::pagefault::copy_frame(PhysAddr::new(new_frame.as_u64()), old_frame);
-        }
-        *entry = PageTableEntry::new_page(PhysAddr::new(new_frame.as_u64()), new_flags);
-        // SAFETY: see the sole-owner branch above.
+        // Decide sole-owner AND do the reuse/copy while STILL holding the
+        // frame's COW bucket lock (cow_resolve), so a concurrent sibling
+        // resolving this same frame cannot make it writable and let its
+        // faulting instruction scribble into `old_frame` mid-copy — the SMP
+        // torn-copy race that corrupted a forking Rust process's stack.
+        crate::cow::cow_resolve(PhysAddr::new(old_frame.as_u64()), |sole| {
+            if sole {
+                // Sole remaining owner — reuse the frame in place, no copy.
+                *entry = old.with_flags(new_flags);
+            } else {
+                // Another peer still maps this frame: copy away. The bucket
+                // lock is held across the copy, so that peer cannot write
+                // `old_frame` until we are done reading it.
+                let new_frame = kernel_memory::alloc_frame();
+                unsafe {
+                    crate::pagefault::copy_frame(PhysAddr::new(new_frame.as_u64()), old_frame);
+                }
+                *entry = PageTableEntry::new_page(PhysAddr::new(new_frame.as_u64()), new_flags);
+            }
+        });
+        // Shootdown AFTER releasing the bucket lock (shootdown takes its own
+        // locks; keeping the orders from overlapping avoids any cycle).
+        // SAFETY: this AddressSpace may be CLONE_VM-shared with a thread on
+        // another CPU right now; shootdown_page flushes locally then IPIs any
+        // remote CPU in active_cpus.
         unsafe { crate::shootdown::shootdown_page(self.active_cpus.snapshot(), page) };
         true
     }
@@ -728,8 +754,20 @@ impl AddressSpace {
                     // NOR must one conclude "I'm sole owner" while the
                     // other peer's PTE still maps this frame (dangling
                     // page-table entry / physical-memory corruption).
-                    let sole_owner = !old.is_cow() || crate::cow::cow_release(frame);
-                    if sole_owner {
+                    // Free under the frame's COW bucket lock (cow_resolve),
+                    // so this free cannot race a sibling's concurrent
+                    // copy-away of the same frame — see cow_resolve's note.
+                    if old.is_cow() {
+                        crate::cow::cow_resolve(frame, |sole| {
+                            if sole {
+                                unsafe {
+                                    kernel_memory::free_frame(kernel_memory::PhysAddr::new(
+                                        frame.as_u64(),
+                                    ));
+                                }
+                            }
+                        });
+                    } else {
                         unsafe {
                             kernel_memory::free_frame(kernel_memory::PhysAddr::new(frame.as_u64()));
                         }
@@ -784,8 +822,18 @@ impl AddressSpace {
                     *entry = PageTableEntry::empty();
                     if !shared {
                         let frame = old.frame();
-                        let sole_owner = !old.is_cow() || crate::cow::cow_release(frame);
-                        if sole_owner {
+                        // Free under the COW bucket lock (see cow_resolve).
+                        if old.is_cow() {
+                            crate::cow::cow_resolve(frame, |sole| {
+                                if sole {
+                                    unsafe {
+                                        kernel_memory::free_frame(kernel_memory::PhysAddr::new(
+                                            frame.as_u64(),
+                                        ));
+                                    }
+                                }
+                            });
+                        } else {
                             unsafe {
                                 kernel_memory::free_frame(kernel_memory::PhysAddr::new(
                                     frame.as_u64(),
@@ -887,8 +935,19 @@ unsafe fn free_table(phys: PhysAddr, level: u8) {
             // read + cow_unshare() call, since a sibling process tearing
             // down its own mapping of this same frame (process exit,
             // munmap) can run concurrently on another CPU.
-            let sole_owner = !entry.is_cow() || crate::cow::cow_release(frame);
-            if sole_owner {
+            // Free under the frame's COW bucket lock (cow_resolve) so this
+            // teardown cannot race a sibling's concurrent copy-away of the
+            // same frame — see cow_resolve's doc comment.
+            if entry.is_cow() {
+                crate::cow::cow_resolve(frame, |sole| {
+                    if sole {
+                        unsafe {
+                            // SAFETY: leaf frame no longer reachable once its owning table is freed.
+                            kernel_memory::free_frame(kernel_memory::PhysAddr::new(frame.as_u64()));
+                        }
+                    }
+                });
+            } else {
                 unsafe {
                     // SAFETY: leaf frame is no longer reachable after its owning table is freed.
                     kernel_memory::free_frame(kernel_memory::PhysAddr::new(frame.as_u64()));

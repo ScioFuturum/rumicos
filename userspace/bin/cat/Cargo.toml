@@ -1,0 +1,16 @@
+[package]
+name = "ucat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cat"
+path = "src/main.rs"
+# #![no_main] with a raw _start cannot link against the host test harness.
+test = false
+bench = false
+
+[dependencies]
+liblow = { path = "../../liblow" }

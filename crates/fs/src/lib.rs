@@ -100,6 +100,7 @@ pub fn init_fs() {
         pagecache::writeback_vnode,
     );
     kernel_proc::register_vnode_refcount_hooks(vnode_inc_ref_shim, vnode_dec_ref_shim);
+    kernel_proc::register_vnode_release_hook(vnode_release_shim);
 }
 
 #[cfg(not(target_os = "none"))]
@@ -129,6 +130,21 @@ unsafe fn vnode_dec_ref_shim(vnode_ptr: usize) {
     // SAFETY: forwards this function's own precondition.
     let vn = unsafe { &*(vnode_ptr as *const VNode) };
     vn.dec_ref();
+}
+
+/// # Safety: `vnode_ptr` must be a valid direct-map VA of a live VNode.
+///
+/// The full close-time hook `kernel_proc::Process::exit` calls for every fd
+/// the dying process still holds — exactly what `sys_close` runs after
+/// clearing an fd slot. For a pipe end this decrements reader/writer
+/// liveness and wakes the blocked opposite end (EOF/EPIPE); for
+/// ramfs/devfs vnodes `release` is a no-op.
+#[cfg(target_os = "none")]
+unsafe fn vnode_release_shim(vnode_ptr: usize) {
+    let vn = vnode_ptr as *mut VNode;
+    // SAFETY: forwards this function's own precondition.
+    let ops = unsafe { (*vn).ops };
+    (ops.release)(vn);
 }
 
 /// Loader registered with kernel-proc for `SYS_EXECVE`. Resolves `path`

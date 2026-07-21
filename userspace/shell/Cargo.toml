@@ -1,0 +1,27 @@
+[package]
+name = "shell"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The library half (parser + planner + executor glue) is what host tests
+# exercise: `cargo test -p shell` needs no --target.
+[lib]
+name = "shell"
+path = "src/lib.rs"
+
+# The binary half is target-only: it is #![no_main] with a raw _start, which
+# cannot link against the host test harness. `required-features` keeps
+# `cargo test -p shell` from trying to build it.
+[[bin]]
+name = "shell"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[features]
+default = []
+bin = []
+
+[dependencies]
+liblow = { path = "../liblow" }

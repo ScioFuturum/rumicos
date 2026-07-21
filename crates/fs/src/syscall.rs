@@ -90,6 +90,26 @@ fn sys_read(fd: i32, buf: *mut u8, len: usize) -> i64 {
     n
 }
 
+/// Split an absolute path into `(parent_dir, basename)`.
+///
+/// `"/tmp/out.txt"` → `("/tmp", "out.txt")`; `"/foo"` → `("/", "foo")`.
+/// Returns `None` when there is no basename to create — a bare `"/"`, an
+/// empty path, a relative path, or anything with a trailing `/`.
+///
+/// Pure and host-testable; used only by `sys_open`'s `O_CREAT` path.
+fn split_parent(path: &str) -> Option<(&str, &str)> {
+    if !path.starts_with('/') || path.ends_with('/') {
+        return None;
+    }
+    let idx = path.rfind('/')?;
+    let base = &path[idx + 1..];
+    if base.is_empty() {
+        return None;
+    }
+    let parent = if idx == 0 { "/" } else { &path[..idx] };
+    Some((parent, base))
+}
+
 fn sys_open(path_ptr: *const u8, path_len: usize, flags: u32) -> i64 {
     let len = path_len.min(255);
     if len == 0 || !is_user_ptr(path_ptr as usize, len) {
@@ -101,10 +121,46 @@ fn sys_open(path_ptr: *const u8, path_len: usize, flags: u32) -> i64 {
         Ok(s) => s,
         Err(_) => return EFAULT,
     };
+
     let vn = match path_lookup(path) {
-        Some(v) => v,
-        None => return ENOENT,
+        Some(v) => {
+            // O_TRUNC on an existing file: drop its contents so re-running
+            // `cmd > file` cannot leave a longer previous file's tail
+            // behind. ramfs implements truncate; for device VNodes it is a
+            // no-op, which is the right behaviour for /dev/serial.
+            if flags & kernel_proc::O_TRUNC != 0 {
+                // SAFETY: path_lookup only returns live VNode pointers.
+                let vnr = unsafe { &*v };
+                (vnr.ops.truncate)(vnr, 0);
+            }
+            v
+        }
+        None => {
+            // O_CREAT: create the file in its parent directory. ramfs can
+            // already do this — it is the same VNodeOps::create the CPIO
+            // unpacker uses to populate the initrd at boot.
+            if flags & kernel_proc::O_CREAT == 0 {
+                return ENOENT;
+            }
+            let (parent, base) = match split_parent(path) {
+                Some(x) => x,
+                None => return ENOENT,
+            };
+            let dir = match path_lookup(parent) {
+                Some(d) => d,
+                None => return ENOENT, // parent directory must already exist
+            };
+            // SAFETY: path_lookup only returns live VNode pointers.
+            let dirr = unsafe { &*dir };
+            match (dirr.ops.create)(dirr, base, crate::vnode::VNodeType::Regular) {
+                Some(v) => v,
+                // The directory is full, out of frames, or is not a
+                // directory at all (its create op is the no-op stub).
+                None => return ENOENT,
+            }
+        }
     };
+
     let proc = kernel_proc::current_process();
     if proc.is_null() {
         return EBADF;
@@ -264,5 +320,37 @@ unsafe fn user_write<T: Copy>(dst: *mut T, val: T) {
     #[cfg(not(target_os = "none"))]
     unsafe {
         core::ptr::write(dst, val);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_parent;
+
+    #[test]
+    fn split_parent_nested_path() {
+        assert_eq!(split_parent("/tmp/out.txt"), Some(("/tmp", "out.txt")));
+        assert_eq!(split_parent("/bin/echo"), Some(("/bin", "echo")));
+        assert_eq!(split_parent("/a/b/c/d"), Some(("/a/b/c", "d")));
+    }
+
+    #[test]
+    fn split_parent_top_level_file_has_root_parent() {
+        assert_eq!(split_parent("/foo"), Some(("/", "foo")));
+    }
+
+    #[test]
+    fn split_parent_rejects_paths_with_no_basename() {
+        assert_eq!(split_parent("/"), None);
+        assert_eq!(split_parent(""), None);
+        // A trailing slash names a directory, not a file to create.
+        assert_eq!(split_parent("/tmp/"), None);
+    }
+
+    #[test]
+    fn split_parent_rejects_relative_paths() {
+        // The VFS only resolves absolute paths (see path_lookup_from).
+        assert_eq!(split_parent("foo.txt"), None);
+        assert_eq!(split_parent("tmp/out.txt"), None);
     }
 }

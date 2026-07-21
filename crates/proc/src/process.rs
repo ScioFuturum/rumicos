@@ -37,6 +37,15 @@ pub struct Process {
     pub user_rsp: u64,
     pub user_rflags: u64,
     pub user_rax: i64,
+    /// The SysV callee-saved user registers `[rbx, rbp, r12, r13, r14, r15]`
+    /// to load before this process first enters ring 3. Zero for a
+    /// from-scratch image (`create`/`execve`), where `_start` relies on none
+    /// of them; the parent's values for a `fork`/`clone` child, so that Rust
+    /// (or any) code which keeps a live value in a callee-saved register
+    /// across the `fork()`/`clone()` syscall sees it intact in the child.
+    /// Without this the child resumed with kernel garbage in those registers
+    /// — invisible to hand-written asm userspace, fatal to compiled code.
+    pub user_callee: [u64; 6],
     pub fd_table: kernel_sync::SpinLock<FdTable>,
     /// PID of the process that forked/cloned this one, `0` for the initial
     /// process (which has no parent). `sys_exit` raises SIGCHLD against it.
@@ -189,6 +198,8 @@ impl Process {
             user_rsp,
             user_rflags: 0x202,
             user_rax: 0,
+            // A from-scratch image; _start relies on no callee-saved value.
+            user_callee: [0; 6],
             fd_table: kernel_sync::SpinLock::new(fd_tab),
             parent_pid: 0,
             sig_table: kernel_sync::SpinLock::new(SigTable::new()),
@@ -223,6 +234,31 @@ impl Process {
     }
 
     pub fn exit(&mut self, code: i32) {
+        // POSIX: exit() closes every open fd, running the same full
+        // `release` hook `sys_close` runs (for a pipe end that decrements
+        // reader/writer liveness and wakes the blocked opposite end —
+        // without this, a pipeline stage exiting without an explicit
+        // close() leaves its pipe's reader waiting for an EOF that never
+        // comes). The vnode pointers are collected under the fd_table lock
+        // but released OUTSIDE it, mirroring sys_close's lock discipline
+        // (release takes wait-queue locks; fd_table is never held across
+        // them).
+        let mut open_vns = [0usize; crate::fd::MAX_FDS];
+        {
+            let mut fdt = self.fd_table.lock();
+            for (slot, out) in fdt.fds.iter_mut().zip(open_vns.iter_mut()) {
+                if let Some(e) = slot.take() {
+                    *out = e.vnode_ptr;
+                }
+            }
+        }
+        for vn in open_vns.into_iter().filter(|&v| v != 0) {
+            // SAFETY: vn came from a live FdEntry this process owned; the
+            // VNode outlives the close (pipe control/data frames stay
+            // referenced until BOTH ends are fully closed).
+            unsafe { crate::syscall::vnode_release(vn) };
+        }
+
         self.state = ProcessState::Zombie;
         self.exit_code = code;
         // Notify the parent (if any): raise SIGCHLD AND wake it if it is
@@ -299,6 +335,7 @@ pub(crate) fn test_process() -> Process {
         user_rsp: 0,
         user_rflags: 0,
         user_rax: 0,
+        user_callee: [0; 6],
         fd_table: kernel_sync::SpinLock::new(FdTable::new()),
         parent_pid: 0,
         sig_table: kernel_sync::SpinLock::new(SigTable::new()),
@@ -437,7 +474,26 @@ extern "C" fn ring3_entry_rust() -> ! {
     // The PML4 frame is 4 KiB-aligned so its low 12 bits are 0.
     // SAFETY: as_ptr is live per the same contract as above.
     let cr3 = unsafe { (*as_ptr).pml4_phys.as_u64() | (*as_ptr).pcid as u64 };
-    unsafe { enter_user_mode(cr3, p.user_rip, p.user_rsp, p.user_rflags, p.user_rax) }
+
+    // Enter ring 3 restoring the FULL context, so a fork/clone child gets
+    // its parent's callee-saved registers (user_callee) rather than kernel
+    // garbage. For a from-scratch image user_callee is all zero, which is
+    // exactly what a fresh _start expects. Caller-saved registers are left
+    // zero: the fork()/clone() syscall was already permitted to clobber them.
+    let mut ctx = crate::signal::SavedUserContext::zeroed();
+    ctx.user_rip = p.user_rip;
+    ctx.user_rsp = p.user_rsp;
+    ctx.user_rflags = p.user_rflags;
+    ctx.rax = p.user_rax as u64;
+    ctx.rbx = p.user_callee[0];
+    ctx.rbp = p.user_callee[1];
+    ctx.r12 = p.user_callee[2];
+    ctx.r13 = p.user_callee[3];
+    ctx.r14 = p.user_callee[4];
+    ctx.r15 = p.user_callee[5];
+    // SAFETY: ctx is a valid, fully-initialised context; cr3 is this
+    // process's live address space; noreturn.
+    unsafe { enter_user_mode_restoring(&ctx as *const _, cr3) }
 }
 
 /// Load `cr3`, set up the registers `SYSRET` expects, and drop to ring 3 at

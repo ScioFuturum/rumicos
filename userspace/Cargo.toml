@@ -1,0 +1,41 @@
+[workspace]
+members = ["liblow", "shell", "bin/echo", "bin/cat"]
+resolver = "2"
+
+# DELIBERATELY a separate workspace from the kernel at the repo root, so
+# userspace crates do not inherit the kernel's release profile.
+#
+# BUILD WITH `cargo xtask build-userspace` (from the repo root) — NOT with a
+# bare `cargo build --target x86_64-unknown-none` from this directory.
+#
+# Why: cargo MERGES .cargo/config.toml files up the directory tree, and the
+# repo root's config pins `-C link-arg=-Tkernel/linker/x86_64.ld` — the
+# KERNEL's higher-half linker script — onto every x86_64-unknown-none
+# build. A nested userspace/.cargo/config.toml does not replace those flags,
+# it appends to them, so the kernel script still wins and the link fails
+# ("cannot find linker script kernel/linker/x86_64.ld", or worse, silently
+# links userspace at kernel addresses). Only the RUSTFLAGS *environment
+# variable* replaces config rustflags outright, which is exactly what
+# xtask's build-userspace does. (miscompile-repro/ never hit this because it
+# only ever builds --lib, which performs no link step.)
+#
+# Host unit tests need none of that: `cargo test -p shell` builds for the
+# host, where no target rustflags apply.
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.97"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+# Keep the symbol table out: these images are embedded in initrd.cpio,
+# which is embedded in the kernel binary, so every byte is paid for twice.
+strip = false
+debug = 2
+
+[profile.dev]
+panic = "abort"

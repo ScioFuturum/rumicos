@@ -663,12 +663,12 @@ mod tests {
     fn decide_handler_is_delivered_with_signum() {
         let p = PendingSet::new();
         let mut t = SigTable::new();
-        t.actions[SIGUSR1 as usize] = SigAction::Handler { user_fn: 0x4020_00 };
+        t.actions[SIGUSR1 as usize] = SigAction::Handler { user_fn: 0x0040_2000 };
         p.raise(SIGUSR1);
         assert_eq!(
             decide_next_signal(&p, &t),
             SignalOutcome::Deliver {
-                user_fn: 0x4020_00,
+                user_fn: 0x0040_2000,
                 signum: SIGUSR1
             }
         );

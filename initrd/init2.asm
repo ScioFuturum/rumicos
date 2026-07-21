@@ -565,8 +565,35 @@ _start:
     syscall
 
 .parent_exit:
-    xor  edi, edi
-    mov  eax, 60              ; SYS_EXIT
+    ; Reap the CoW-test child before becoming the shell: the shell reaps
+    ; its own pipeline stages with wait4(-1), and a zombie left over from
+    ; THIS fork test would be miscounted as one of them (off-by-one in
+    ; every pipeline's reap cycle). wait4 also orders the serial output —
+    ; every child line lands before the shell's first line.
+    mov  rdi, -1              ; any child
+    xor  esi, esi             ; status = NULL (sys_wait4 skips the write)
+    xor  edx, edx             ; options = 0
+    xor  r10d, r10d           ; rusage = NULL
+    mov  eax, 61              ; SYS_WAIT4
+    syscall
+
+    ; Hand the boot over to the userspace shell (/bin/shell from initrd).
+    ; On success this never returns; the shell's self-test lines continue
+    ; the expected-boot transcript.
+    lea  rdi, [rel shell_path]
+    lea  rsi, [rel shell_argv]
+    xor  edx, edx             ; envp = NULL
+    mov  eax, 59              ; SYS_EXECVE
+    syscall
+
+    ; Only reached if execve failed (phase-1 error: image intact).
+    mov  edi, 1
+    lea  rsi, [rel shell_fail_msg]
+    mov  edx, shell_fail_len
+    mov  eax, 1               ; SYS_WRITE
+    syscall
+    mov  edi, 1
+    mov  eax, 60              ; SYS_EXIT(1)
     syscall
     jmp  $                    ; unreachable
 
@@ -703,6 +730,9 @@ wait_ok_len                equ $ - wait_ok_msg
 wait_fail_msg:             db "wait: FAIL", 10
 wait_fail_len              equ $ - wait_fail_msg
 
+shell_fail_msg:            db "init2: execve(/bin/shell) failed - FAIL", 10
+shell_fail_len             equ $ - shell_fail_msg
+
 name_ok_msg:               db "fork: child name intact after copy - OK", 10
 name_ok_len                equ $ - name_ok_msg
 name_fail_msg:             db "fork: child name SHREDDED by miscompile - FAIL", 10
@@ -755,6 +785,13 @@ reread_buf: times 32 db 0
 ; CoW fault on first write, same as shared_byte above.
 align 16
 name_buf: times 16 db 0
+
+; execve(/bin/shell) hand-off. The path is NUL-terminated and shell_argv is
+; a NULL-terminated array of pointers, exactly what sys_execve reads. ld
+; resolves shell_path to its absolute link-time VA (static, non-PIE link).
+shell_path: db "/bin/shell", 0
+align 8
+shell_argv: dq shell_path, 0
 
 ; pipe() writes the two fd numbers here: [0]=read end, [1]=write end.
 align 8

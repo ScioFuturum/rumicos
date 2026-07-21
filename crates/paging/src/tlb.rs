@@ -172,6 +172,37 @@ pub unsafe fn write_cr4(value: u64) {
     }
 }
 
+/// The BSP's final CR4 (PGE/PCIDE/SMEP/SMAP as probed and enabled during
+/// paging init), published for APs to mirror. `0` = not published yet.
+static BSP_CR4: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Record the BSP's final CR4. Called once at the end of paging init.
+pub fn publish_bsp_cr4(cr4: u64) {
+    BSP_CR4.store(cr4, core::sync::atomic::Ordering::Release);
+}
+
+/// Mirror the BSP's published CR4 onto the calling AP.
+///
+/// The AP trampoline leaves CR4 at PAE-only; every feature bit the kernel
+/// relies on (SMAP for its STAC/CLAC user-copy discipline, SMEP, PGE,
+/// PCIDE for the tagged-TLB plumbing) must be replayed here or the AP
+/// #UDs on its first STAC / runs with silently different TLB semantics.
+/// Safe to call before the PCID-tagged CR3 is ever loaded on this AP:
+/// the trampoline's CR3 has zero low bits, satisfying the PCIDE
+/// enable-time constraint.
+///
+/// # Safety
+/// Must run on an AP during bring-up, after the BSP published its CR4 and
+/// before this AP first enters user mode or touches user memory.
+pub unsafe fn apply_bsp_cr4_on_ap() {
+    let cr4 = BSP_CR4.load(core::sync::atomic::Ordering::Acquire);
+    if cr4 != 0 {
+        // SAFETY: caller guarantees AP bring-up context; the value was a
+        // valid CR4 on the BSP of this same homogeneous system.
+        unsafe { write_cr4(cr4) };
+    }
+}
+
 /// Privileged instruction wrapper: read EFER MSR
 ///
 /// # Safety

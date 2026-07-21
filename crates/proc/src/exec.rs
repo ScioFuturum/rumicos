@@ -219,6 +219,15 @@ pub unsafe fn do_execve(path: &str, argv: &[&str], envp: &[&str]) -> i32 {
         // SAFETY: old_as_ptr came from AddressSpace::alloc_shared and this
         // process held one of its references; CR3 no longer references it
         // as of the activate() call above.
+        //
+        // NOTE: an earlier checkpoint suspected this teardown of corrupting
+        // a living parent when a FORKED child execve()s. That was
+        // disproven during the shell checkpoint by tracing every leaf-frame
+        // decision (`cow_resolve` consume/keep/free) through a live boot:
+        // the CoW accounting is exact for fork→execve-while-parent-alive.
+        // The "parent corruption" was actually the syscall trampoline
+        // restoring the user RSP from a per-CPU slot (fixed in
+        // kernel-cpu's syscall_entry) — see docs/shell-checkpoint.md.
         unsafe { crate::address_space::AddressSpace::drop_ref(old_as_ptr) };
 
         proc.user_rip = elf_info.entry;

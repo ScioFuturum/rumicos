@@ -224,10 +224,11 @@ pub(crate) unsafe fn reap_zombie(parent: *mut Process, child_pid: u32) {
     crate::ptable::ptable_remove(child_pid);
     crate::syscall::unregister_process(child);
 
-    // fd_table is intentionally NOT vnode-dec_ref'd here: this kernel does
-    // not inc_ref fd vnodes across fork (see FdTable::clone_for_fork), so a
-    // dec_ref would be unbalanced. The FdTable's storage is inside the
-    // Process frame freed in the last step.
+    // fd_table needs no attention here: `Process::exit` already closed
+    // every fd (running the full `vnode_release` hook per entry, balancing
+    // `clone_for_fork`'s inc_ref) before the process became a zombie, so
+    // by reap time the table is empty. Its storage is inside the Process
+    // frame freed in the last step.
 
     #[cfg(target_os = "none")]
     unsafe {

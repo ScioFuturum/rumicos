@@ -87,8 +87,8 @@ pub fn cpu_count() -> u32 {
 
 #[cfg(test)]
 pub(crate) fn reset_for_tests(count: u32) {
-    for idx in 0..MAX_CPUS {
-        let mut cpu = SCHED_CPUS[idx].lock();
+    for (idx, slot) in SCHED_CPUS.iter().enumerate() {
+        let mut cpu = slot.lock();
         *cpu = SchedCpu::uninit();
         cpu.cpu_id = idx as u32;
     }

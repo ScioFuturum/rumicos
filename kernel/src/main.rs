@@ -123,6 +123,13 @@ fn kernel_main() {
     unsafe { serial_debug_byte(b'W') }
 
     kernel_sched::init(kernel_smp::online_count());
+    // Reschedule kick: when kernel-sched parks a thread on a REMOTE CPU's
+    // run queue, broadcast RESCHED_VECTOR so idle APs (which have no
+    // periodic timer — only the BSP does) wake from `sti; hlt` and drain
+    // their queues. Without this a pipeline stage forked onto an idle AP
+    // starves forever; see kernel_sched::register_kick_hook's docs.
+    kernel_cpu::register_handler(RESCHED_VECTOR, resched_handler);
+    kernel_sched::register_kick_hook(resched_kick);
     unsafe { serial_debug_byte(b'R') }
 
     // ── VFS / process init ────────────────────────────────────────────────
@@ -194,6 +201,38 @@ unsafe fn serial_debug_read(port: u16) -> u8 {
 }
 
 // ─── timer / scheduling ───────────────────────────────────────────────────
+
+/// Reschedule-kick IPI vector. 0x20 is the timer, 0xfc the TLB shootdown
+/// (see kernel_proc::shootdown); 0xfb is otherwise unused.
+const RESCHED_VECTOR: u8 = 0xfb;
+
+/// Broadcast the reschedule kick to every other CPU. Registered with
+/// kernel-sched as its remote-kick hook. Broadcasting (rather than
+/// targeting the one CPU) avoids needing a cpu-index → APIC-ID map here;
+/// a CPU with nothing new in its queue just schedules and goes back to
+/// sleep.
+fn resched_kick() {
+    // SAFETY: LAPICs are initialized on every online CPU before the hook
+    // is registered; RESCHED_VECTOR has a registered handler.
+    unsafe {
+        kernel_apic::send_ipi(
+            kernel_apic::IpiDest::Others,
+            kernel_apic::IpiDelivery::Fixed(RESCHED_VECTOR),
+        );
+    }
+}
+
+/// Handler for [`RESCHED_VECTOR`]: acknowledge and let the scheduler pick
+/// up whatever just landed in this CPU's run queue.
+fn resched_handler(_frame: &mut kernel_cpu::InterruptFrame, _vec: u8) {
+    kernel_apic::eoi();
+    if kernel_smp::ap_entry::SCHEDULER_STARTED.load(Ordering::Acquire) {
+        let cpu_id = kernel_sched::current_cpu_id();
+        unsafe {
+            kernel_sched::schedule(cpu_id);
+        }
+    }
+}
 
 fn timer_handler(_frame: &mut kernel_cpu::InterruptFrame, _vec: u8) {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);

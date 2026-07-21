@@ -57,6 +57,34 @@ pub fn pf_handler(frame: &mut InterruptFrame, _vector: u8) {
     }
 
     if (frame.error_code & PF_USER) != 0 {
+        // One compact diagnostic line before the kill. Killing a process
+        // for an unresolved user fault is correct POSIX-ish behaviour, but
+        // doing it in total silence cost this project hours of blind
+        // debugging during the shell checkpoint — never again.
+        #[cfg(target_os = "none")]
+        unsafe {
+            let hex = |v: u64| {
+                for i in (0..16).rev() {
+                    let d = ((v >> (i * 4)) & 0xf) as u8;
+                    crate::syscall::serial_write_byte(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+                }
+            };
+            for b in b"\n[SIGSEGV addr=" {
+                crate::syscall::serial_write_byte(*b);
+            }
+            hex(fault_addr);
+            for b in b" rip=" {
+                crate::syscall::serial_write_byte(*b);
+            }
+            hex(frame.rip);
+            for b in b" err=" {
+                crate::syscall::serial_write_byte(*b);
+            }
+            hex(frame.error_code);
+            for b in b"]\n" {
+                crate::syscall::serial_write_byte(*b);
+            }
+        }
         unsafe {
             // SAFETY: current_process returned this thread's process above.
             (*crate::syscall::current_process()).exit(SIGSEGV_EXIT);

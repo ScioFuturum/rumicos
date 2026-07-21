@@ -20,6 +20,13 @@ pub unsafe extern "C" fn ap_entry_rust() -> ! {
 
     kernel_cpu::init_cpu(cpu_id);
     kernel_apic::init_ap();
+    // Mirror the BSP's CR4 feature bits (SMAP/SMEP/PGE/PCIDE): the
+    // trampoline only set PAE, and running user threads on an AP whose
+    // CR4.SMAP is clear makes the kernel's own STAC/CLAC user-copy
+    // sequences #UD. See kernel_paging::tlb::apply_bsp_cr4_on_ap.
+    // SAFETY: AP bring-up, before this CPU runs any user thread; the
+    // trampoline's CR3 low bits are zero so PCIDE can be set.
+    unsafe { kernel_paging::tlb::apply_bsp_cr4_on_ap() };
 
     cpuinfo::set_cpu_online(cpu_id);
     fence(Ordering::SeqCst);
@@ -34,7 +41,14 @@ pub unsafe extern "C" fn ap_entry_rust() -> ! {
         core::hint::spin_loop();
     }
 
-    kernel_apic::set_timer_oneshot(1);
+    // Deliberately NOT arming this AP's LAPIC timer. User threads are
+    // pinned to the BSP's run queue for now (see kernel_sched::
+    // enqueue_thread), so an AP tick would only add concurrent schedule()
+    // entries — the exact latent-SMP-race surface this checkpoint chose
+    // not to open (docs/shell-checkpoint.md, Known limitations). The AP
+    // still enables interrupts: it must take TLB-shootdown and reschedule
+    // IPIs (both actually deliverable only since the x2APIC
+    // software-enable fix in kernel_apic::lapic::init_lapic).
     // SAFETY: this AP has CPU, IDT, LAPIC, and scheduler state initialized
     // before interrupts are enabled.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)) };

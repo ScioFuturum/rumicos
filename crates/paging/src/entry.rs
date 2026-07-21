@@ -217,6 +217,17 @@ impl PageTableEntry {
     }
 }
 
+/// Construct CR3 value from PML4 address, PCID, and NOFLUSH bit
+#[inline]
+pub const fn make_cr3(pml4_phys: PhysAddr, pcid: u16, noflush: bool) -> u64 {
+    let mut cr3 = pml4_phys.frame_bits() << 12;
+    cr3 |= (pcid as u64) & 0xFFF;
+    if noflush {
+        cr3 |= 1u64 << 63;
+    }
+    cr3
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,15 +302,4 @@ mod tests {
         assert!(ro_cow.is_cow());
         assert!(!ro_cow.without_cow().is_cow());
     }
-}
-
-/// Construct CR3 value from PML4 address, PCID, and NOFLUSH bit
-#[inline]
-pub const fn make_cr3(pml4_phys: PhysAddr, pcid: u16, noflush: bool) -> u64 {
-    let mut cr3 = pml4_phys.frame_bits() << 12;
-    cr3 |= (pcid as u64) & 0xFFF;
-    if noflush {
-        cr3 |= 1u64 << 63;
-    }
-    cr3
 }

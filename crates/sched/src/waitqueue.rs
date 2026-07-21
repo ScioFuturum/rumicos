@@ -1,4 +1,4 @@
-use crate::percpu::{cpu_count, sched_cpu};
+use crate::percpu::sched_cpu;
 use crate::thread::{Thread, ThreadState};
 use core::cell::UnsafeCell;
 use core::ptr;
@@ -238,12 +238,19 @@ fn try_make_runnable(thread: *mut Thread) -> bool {
         return false;
     }
 
-    // SAFETY: wait nodes contain live blocked thread pointers while enqueued.
-    let target = unsafe { (*thread).cpu_id }.min(cpu_count().saturating_sub(1));
-    if try_push_to_cpu(thread, target) {
+    // Woken threads go to the BSP's queue, same pinning rationale as
+    // enqueue_thread: only the BSP's queue is reliably drained today.
+    // Two attempts cover transient sched-lock contention.
+    let target = 0;
+    if try_push_to_cpu(thread, target) || try_push_to_cpu(thread, target) {
+        // A push from an AP onto the BSP's queue needs the BSP poked in
+        // case it is idling (see KICK_REMOTE_HOOK).
+        if target != crate::current_cpu_id() {
+            crate::kick_remote_cpus();
+        }
         return true;
     }
-    target != 0 && try_push_to_cpu(thread, 0)
+    false
 }
 
 fn try_push_to_cpu(thread: *mut Thread, cpu_id: u32) -> bool {

@@ -117,6 +117,14 @@ static PAGE_CACHE_WRITEBACK: AtomicUsize = AtomicUsize::new(0);
 /// file-backed VMA's vnode refcount without a typed VNode pointer.
 static VNODE_INC_REF: AtomicUsize = AtomicUsize::new(0);
 static VNODE_DEC_REF: AtomicUsize = AtomicUsize::new(0);
+/// The full close-time hook: runs the VNode's `ops.release` (which for a
+/// pipe end decrements reader/writer liveness AND wakes the opposite end),
+/// not just a bare refcount decrement. `Process::exit` calls this for every
+/// fd the dying process still holds open — without it, a pipeline stage
+/// that exits without explicitly closing its stdout pipe end would leave
+/// the write-side refcount high forever and the downstream reader would
+/// never see EOF.
+static VNODE_RELEASE: AtomicUsize = AtomicUsize::new(0);
 
 /// Register the page cache's `get_or_fill`/`mark_dirty`/`writeback_vnode`
 /// functions. Called once by kernel-fs's `init_fs()`.
@@ -142,6 +150,12 @@ pub fn register_page_cache_hooks(
 pub fn register_vnode_refcount_hooks(inc_ref: unsafe fn(usize), dec_ref: unsafe fn(usize)) {
     VNODE_INC_REF.store(inc_ref as usize, Ordering::Release);
     VNODE_DEC_REF.store(dec_ref as usize, Ordering::Release);
+}
+
+/// Register the full close-time release shim (see [`VNODE_RELEASE`]).
+/// Called once by kernel-fs's `init_fs()`.
+pub fn register_vnode_release_hook(release: unsafe fn(usize)) {
+    VNODE_RELEASE.store(release as usize, Ordering::Release);
 }
 
 /// # Safety
@@ -207,6 +221,22 @@ pub(crate) unsafe fn vnode_inc_ref(vnode_ptr: usize) {
 /// # Safety: `vnode_ptr` must be a valid direct-map VA of a live VNode.
 pub(crate) unsafe fn vnode_dec_ref(vnode_ptr: usize) {
     let f = VNODE_DEC_REF.load(Ordering::Acquire);
+    if f == 0 {
+        return;
+    }
+    // SAFETY: only ever stores a fn matching this signature.
+    let f: unsafe fn(usize) = unsafe { core::mem::transmute(f) };
+    // SAFETY: forwards this function's own precondition.
+    unsafe { f(vnode_ptr) };
+}
+
+/// Run `vnode_ptr`'s full `ops.release` hook — the same thing `sys_close`
+/// does after removing an fd slot. See [`VNODE_RELEASE`] for why exit needs
+/// this rather than a bare `vnode_dec_ref`.
+///
+/// # Safety: `vnode_ptr` must be a valid direct-map VA of a live VNode.
+pub(crate) unsafe fn vnode_release(vnode_ptr: usize) {
+    let f = VNODE_RELEASE.load(Ordering::Acquire);
     if f == 0 {
         return;
     }

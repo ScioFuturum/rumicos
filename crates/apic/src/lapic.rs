@@ -13,6 +13,8 @@ const DIRECT_MAP_BASE_5L: u64 = 0xff00_0000_0000_0000;
 const X2APIC_EOI: u32 = 0x80b;
 const X2APIC_ID: u32 = 0x802;
 const X2APIC_ICR: u32 = 0x830;
+const X2APIC_TPR: u32 = 0x808;
+const X2APIC_SIVR: u32 = 0x80f;
 const X2APIC_LVT_TIMER: u32 = 0x832;
 const X2APIC_TIMER_INITIAL_COUNT: u32 = 0x838;
 const X2APIC_TIMER_CURRENT_COUNT: u32 = 0x839;
@@ -120,6 +122,21 @@ fn init_lapic() -> ApicMode {
                 apic_base | APIC_BASE_GLOBAL_ENABLE | APIC_BASE_X2APIC,
             )
         };
+        // SOFTWARE-enable the LAPIC (SVR bit 8) and open the task-priority
+        // gate, exactly as the xAPIC branch below always did. This was
+        // missing here: the BSP worked anyway because UEFI firmware leaves
+        // its LAPIC software-enabled, but an AP arrives from INIT/SIPI with
+        // SVR.enable = 0 — a software-DISABLED APIC, which still accepts
+        // INIT/SIPI (so bring-up "worked") but silently swallows every
+        // fixed-vector interrupt: the armed LAPIC timer never fired and
+        // reschedule IPIs never arrived, so an AP never drained its run
+        // queue — a pipeline stage enqueued there starved forever.
+        // SAFETY: x2APIC MSR space is active per the wrmsr above; TPR=0
+        // accepts all priorities, SIVR sets enable + spurious vector.
+        unsafe {
+            wrmsr(X2APIC_TPR, 0);
+            wrmsr(X2APIC_SIVR, (SPURIOUS_ENABLE | SPURIOUS_VECTOR) as u64);
+        }
         APIC_MODE.store(APIC_MODE_X2APIC, Ordering::Release);
         ApicMode::X2Apic
     } else {

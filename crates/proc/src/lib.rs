@@ -25,12 +25,13 @@ pub mod wait;
 pub use address_space::AddressSpace;
 pub use clone::{CLONE_VM, SYS_CLONE};
 pub use elf::{ElfError, ElfInfo, LoadSegment, parse_elf};
-pub use fd::{FdEntry, FdTable, MAX_FDS, O_RDONLY, O_RDWR, O_WRONLY};
+pub use fd::{FdEntry, FdTable, MAX_FDS, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 pub use fork::SYS_FORK;
 pub use process::{Pid, Process, ProcessState, alloc_pid};
 pub use syscall::{
     SYS_EXECVE, current_process, is_user_ptr, register_exec_loader, register_extra,
-    register_page_cache_hooks, register_vnode_refcount_hooks, set_serial_vnode,
+    register_page_cache_hooks, register_vnode_refcount_hooks, register_vnode_release_hook,
+    set_serial_vnode,
 };
 pub use vma::{SYS_MMAP, SYS_MUNMAP};
 

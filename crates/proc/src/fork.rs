@@ -55,6 +55,9 @@ pub fn sys_fork() -> i64 {
             user_rsp: syscall_frame.user_rsp,
             user_rflags: syscall_frame.user_rflags,
             user_rax: 0,
+            // Set element-wise below (see the children note) once the child
+            // frame is live.
+            user_callee: [0; 6],
             fd_table: kernel_sync::SpinLock::new(child_fds),
             parent_pid: parent.pid,
             sig_table: kernel_sync::SpinLock::new(child_sig_table),
@@ -74,6 +77,16 @@ pub fn sys_fork() -> i64 {
             *slot = 0;
         }
         (*child_ptr).child_count.store(0, core::sync::atomic::Ordering::Relaxed);
+
+        // The child must resume the fork() call with the parent's
+        // callee-saved registers intact (see Process::user_callee). The
+        // syscall trampoline captured them into the per-CPU frame at entry.
+        (*child_ptr).user_callee[0] = syscall_frame.rbx;
+        (*child_ptr).user_callee[1] = syscall_frame.rbp;
+        (*child_ptr).user_callee[2] = syscall_frame.r12;
+        (*child_ptr).user_callee[3] = syscall_frame.r13;
+        (*child_ptr).user_callee[4] = syscall_frame.r14;
+        (*child_ptr).user_callee[5] = syscall_frame.r15;
 
         crate::syscall::register_process(child_ptr);
         crate::ptable::ptable_insert(child_pid, child_ptr);

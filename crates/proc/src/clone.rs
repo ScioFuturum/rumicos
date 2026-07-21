@@ -135,6 +135,7 @@ pub fn sys_clone(flags: u32, child_stack: u64) -> i64 {
             user_rsp: child_stack,
             user_rflags: syscall_frame.user_rflags,
             user_rax: 0,
+            user_callee: [0; 6], // set element-wise below
             fd_table: kernel_sync::SpinLock::new(child_fds),
             parent_pid: parent.pid,
             sig_table: kernel_sync::SpinLock::new(child_sig_table),
@@ -151,6 +152,16 @@ pub fn sys_clone(flags: u32, child_stack: u64) -> i64 {
             *slot = 0;
         }
         (*child_ptr).child_count.store(0, core::sync::atomic::Ordering::Relaxed);
+
+        // The CLONE_VM child resumes the clone() call site, so it needs the
+        // parent's callee-saved registers just like a fork child (see
+        // Process::user_callee).
+        (*child_ptr).user_callee[0] = syscall_frame.rbx;
+        (*child_ptr).user_callee[1] = syscall_frame.rbp;
+        (*child_ptr).user_callee[2] = syscall_frame.r12;
+        (*child_ptr).user_callee[3] = syscall_frame.r13;
+        (*child_ptr).user_callee[4] = syscall_frame.r14;
+        (*child_ptr).user_callee[5] = syscall_frame.r15;
 
         crate::syscall::register_process(child_ptr);
         crate::ptable::ptable_insert(child_pid, child_ptr);
@@ -203,7 +214,10 @@ mod tests {
     // needs QEMU (or a call-counting seam sys_fork doesn't have today).
     #[test]
     fn non_clone_vm_flags_have_clone_vm_unset_by_construction() {
-        assert_eq!(0u32 & CLONE_VM, 0, "flags=0 has CLONE_VM unset");
-        assert_eq!(0x200u32 & CLONE_VM, 0, "an unrelated bit also has CLONE_VM unset");
+        // Runtime loop (not literal `0 & CLONE_VM`) so clippy's erasing_op
+        // lint doesn't fire on what is deliberately a masking check.
+        for flags in [0u32, 0x200] {
+            assert_eq!(flags & CLONE_VM, 0, "these flags must have CLONE_VM unset");
+        }
     }
 }

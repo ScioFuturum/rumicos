@@ -24,7 +24,15 @@ pub fn try_steal(cpu_id: u32, sc: &mut SchedCpu) -> Option<*mut Thread> {
             continue;
         };
         let victim_queue_len = victim_cpu.run_queue.len();
-        if victim_queue_len < 2 {
+        // Steal even a single lone runnable thread. The old `< 2` threshold
+        // (leave a solo thread with its CPU, to avoid ping-ponging) starved
+        // a thread that was enqueued alone onto an otherwise-idle CPU which
+        // then never drained its own queue: no other idle CPU would rescue
+        // it, so it never ran at all. A shell that fork()s a single child as
+        // the system winds down hit exactly this — the child landed alone on
+        // an idle CPU and hung forever. An idle CPU pulling one waiting
+        // thread is strictly better than both sitting idle.
+        if victim_queue_len < 1 {
             continue;
         }
 

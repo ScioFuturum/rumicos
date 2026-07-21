@@ -202,7 +202,32 @@ pub unsafe extern "C" fn rust_interrupt_dispatch(frame: *mut InterruptFrame, vec
     }
 }
 
-fn default_handler(_frame: &mut InterruptFrame, _vector: u8) {}
+fn default_handler(_frame: &mut InterruptFrame, _vector: u8) {
+    // An unregistered EXCEPTION (vector < 32) is a fault whose IRET
+    // re-executes the faulting instruction — an infinite, perfectly
+    // silent loop pinning one CPU. Print `!vv:rip` so it is at least
+    // loud (raw COM1, no locks — this can fire in any context).
+    // Unregistered non-exception vectors (spurious, unclaimed IRQs)
+    // stay silent no-ops as before.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    if _vector < 32 {
+        // SAFETY: raw port writes to the boot-initialized COM1 UART.
+        unsafe {
+            let out = |b: u8| {
+                core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") b, options(nomem, nostack))
+            };
+            out(b'!');
+            let hx = |d: u8| if d < 10 { b'0' + d } else { b'a' + d - 10 };
+            out(hx(_vector >> 4));
+            out(hx(_vector & 0xf));
+            out(b':');
+            for i in (0..16).rev() {
+                out(hx(((_frame.rip >> (i * 4)) & 0xf) as u8));
+            }
+            out(b'\n');
+        }
+    }
+}
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 fn stub_address(vector: usize) -> u64 {

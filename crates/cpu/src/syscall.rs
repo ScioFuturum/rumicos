@@ -140,6 +140,30 @@ fn syscall_frame_cpu_index() -> usize {
     0
 }
 
+// ## Why the user RSP is pushed onto the KERNEL stack (both variants below)
+//
+// `gs:[CPU_RSP_USER]` is a per-CPU scratch slot, overwritten by EVERY
+// syscall entry on that CPU. That is fine for the entry path (it is
+// consumed immediately, before another syscall can possibly run), but it
+// is NOT a safe place to restore the user RSP from at exit: a syscall
+// that BLOCKS mid-handler (wait4, a pipe read) lets other threads run
+// syscalls on this CPU while it sleeps, each clobbering the slot with
+// THEIR user RSP. When the blocked thread resumed, the old exit code
+// (`mov rsp, gs:[CPU_RSP_USER]`) handed it whichever user RSP was
+// written last — a different process's stack pointer. RIP/RFLAGS and the
+// callee-saved registers were never affected (they live in pushes on the
+// per-THREAD kernel stack); RSP was the one per-CPU hole.
+//
+// This was found live: the shell blocked in wait4 while its pipeline
+// child ran write()+exit() on the same CPU, and the shell then sysret
+// into its own image with the CHILD's last user RSP — since every
+// process's stack sits at the same VAs, that landed mid-way into the
+// shell's own data and the next `ret` popped a data word (rip=0x1).
+// init2's fork tests never caught it because parent and child ran the
+// SAME image at the SAME stack depth, so the clobbered value happened to
+// be (near-)correct. The fix mirrors rcx/r11: park the user RSP on the
+// kernel stack (per-thread by construction) and restore it from there —
+// `mov rsp, [rsp]` loads the pushed value in one step at the exit edge.
 #[cfg(all(
     target_arch = "x86_64",
     target_os = "none",
@@ -156,6 +180,7 @@ syscall_entry:
     swapgs
     mov qword ptr gs:[{cpu_rsp_user}], rsp
     mov rsp, qword ptr gs:[{cpu_rsp_kern}]
+    push qword ptr gs:[{cpu_rsp_user}]
     push rcx
     push r11
     push rbp
@@ -207,7 +232,7 @@ syscall_entry:
     pop rbp
     pop r11
     pop rcx
-    mov rsp, qword ptr gs:[{cpu_rsp_user}]
+    mov rsp, qword ptr [rsp]
     swapgs
     lfence
     sysretq
@@ -233,6 +258,7 @@ syscall_entry:
     swapgs
     mov qword ptr gs:[{cpu_rsp_user}], rsp
     mov rsp, qword ptr gs:[{cpu_rsp_kern}]
+    push qword ptr gs:[{cpu_rsp_user}]
     push rcx
     push r11
     push rbp
@@ -284,7 +310,7 @@ syscall_entry:
     pop rbp
     pop r11
     pop rcx
-    mov rsp, qword ptr gs:[{cpu_rsp_user}]
+    mov rsp, qword ptr [rsp]
     swapgs
     sysretq
     .size syscall_entry, . - syscall_entry

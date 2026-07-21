@@ -115,13 +115,28 @@ impl FdTable {
         self.get(fd).map(|e| e.vnode_ptr).unwrap_or(0)
     }
 
-    /// Clone fd entries for fork.
+    /// Clone fd entries for fork/clone.
     ///
-    /// `kernel-proc` intentionally does not depend on `kernel-fs`, so it
-    /// cannot increment concrete VNode refcounts here. The table preserves
-    /// the inherited descriptor metadata; VFS-owned lifetime accounting must
-    /// stay on the fs side when that cross-crate hook exists.
+    /// Every inherited descriptor is one more real reference to its VNode,
+    /// so each occupied slot bumps the refcount through the registered
+    /// `vnode_inc_ref` hook (`kernel-proc` cannot name the concrete VNode
+    /// type — same cross-crate indirection `dup`/`dup2` already use; a
+    /// no-op on host builds, where kernel-fs never registers it).
+    ///
+    /// This is load-bearing for pipes: a pipe end's reader/writer liveness
+    /// IS its end-VNode refcount (see `kernel_fs::pipe`). Before this hook
+    /// was wired, a forked child inheriting a pipe fd added a real holder
+    /// without adding a reference, so the child's explicit `close()` (the
+    /// standard shell-pipeline fd dance) drove the count to zero — and then
+    /// past it, wrapping — while fds still referenced the end. Readers then
+    /// saw EOF early, or after the wrap never saw it at all.
     pub fn clone_for_fork(&self) -> Self {
+        for entry in self.fds.iter().flatten() {
+            if entry.vnode_ptr != 0 {
+                // SAFETY: vnode_ptr came from a live FdEntry in this table.
+                unsafe { crate::syscall::vnode_inc_ref(entry.vnode_ptr) };
+            }
+        }
         Self { fds: self.fds }
     }
 

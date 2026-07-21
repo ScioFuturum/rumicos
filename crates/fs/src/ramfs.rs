@@ -393,6 +393,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // documents the invariant as a named test
     fn ramfs_max_children_at_least_128() {
         assert!(
             RAMFS_MAX_CHILDREN >= 128,

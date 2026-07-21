@@ -188,6 +188,46 @@ pub fn cow_release(frame: PhysAddr) -> bool {
     true
 }
 
+/// Like [`cow_release`], but runs `action(is_sole)` **while still holding
+/// the frame's bucket lock**, so the release decision and whatever the
+/// caller does with the frame (copy-away, reuse-in-place, or free) are
+/// atomic with respect to every other claimant of the SAME frame.
+///
+/// This closes the SMP race described in `cow_release`'s own doc comment.
+/// `cow_release` alone only made the *count* atomic: a caller that got
+/// `false` and then ran `copy_frame(new, old)` could be reading `old` at the
+/// exact moment another caller — who got `true` an instant later — made
+/// `old` writable and its faulting instruction wrote into it, tearing the
+/// copy. (Symmetrically, a teardown path could `free` `old` while a copier
+/// was still reading it.) Holding the bucket lock across the whole action
+/// serialises copy-vs-reuse and copy-vs-free per frame: the second claimant
+/// blocks on the bucket lock until the first's copy/free has finished.
+///
+/// `action` runs under the bucket lock, so it may take *lower* locks (the
+/// frame allocator) but must never take a lock that is ever held while
+/// acquiring a COW bucket lock. Keep it short — it holds up other CoW
+/// resolutions that hash to the same bucket.
+pub fn cow_resolve<R>(frame: PhysAddr, action: impl FnOnce(bool) -> R) -> R {
+    let mut bucket = COW_TABLE[bucket_index(frame)].lock();
+    let key = frame.as_u64();
+    let mut sole = true;
+    for slot in bucket.entries.iter_mut() {
+        if let Some(entry) = slot
+            && entry.frame == key
+        {
+            if entry.refcount > 2 {
+                entry.refcount -= 1;
+            } else {
+                *slot = None;
+            }
+            sole = false;
+            break;
+        }
+    }
+    // The bucket lock is still held for the duration of `action`.
+    action(sole)
+}
+
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     for bucket in &COW_TABLE {
