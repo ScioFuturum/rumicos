@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rumicos — an operating system written in Rust</title>
+<meta name="description" content="Rumicos is an x86-64 operating system written from scratch in Rust — a universal kernel as the foundation for a domestic software ecosystem.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<div id="page">
+
+<div id="banner">
+  <h1>Rumicos</h1>
+  <div class="sub">An operating system written from scratch in Rust.</div>
+</div>
+
+<div id="nav">
+  <a href="#about">About</a> |
+  <a href="#novelty">Novelty</a> |
+  <a href="#market">Applications</a> |
+  <a href="#roadmap">Roadmap</a> |
+  <a href="#team">Team</a> |
+  <a href="#download">Download</a> |
+  <a href="https://github.com/ScioFuturum/rumicos">GitHub</a> |
+  <a href="../">Русский</a>
+</div>
+
+<h2 id="about">About</h2>
+
+<p>Rumicos is an operating system for x86-64 computers. We write it from scratch in
+Rust — borrowing no existing kernel (Linux, BSD, or the like) and no C standard
+library. The kernel is the part of the system that governs the processor, memory and
+devices; everything else rests on it. We build it as a universal foundation, so one
+and the same base can serve both a desktop system and embedded devices. The first
+target is an operating system for ordinary personal computers.</p>
+
+<p>Everything below is verified by booting the real kernel in the QEMU virtual
+machine, not only by unit tests in isolation. The current build passes <b>277</b>
+automated tests and <b>30 of 30</b> live boot checks.</p>
+
+<p>What already works:</p>
+
+<ul>
+  <li><b>Processes</b> — <tt>fork()</tt> with copy-on-write memory, running real ELF
+      binaries via <tt>execve()</tt>, threads (<tt>clone()</tt>)</li>
+  <li><b>Memory</b> — four-level address translation, <tt>mmap</tt>/<tt>munmap</tt>,
+      demand paging</li>
+  <li><b>Multi-core</b> — booting on several CPU cores, a priority scheduler with
+      cross-core load balancing</li>
+  <li><b>Filesystem</b> — a VFS layer, an in-memory filesystem, devices
+      (<tt>/dev</tt>), a page cache</li>
+  <li><b>Inter-process communication</b> — pipes, signals, waiting on child
+      processes</li>
+  <li><b>Shell</b> — an interactive command shell with pipelines
+      (<tt>cmd1 | cmd2</tt>), I/O redirection and program execution</li>
+</ul>
+
+<h2 id="novelty">Scientific and technical novelty</h2>
+
+<p>Rumicos is not "yet another Linux build". The difference is in the foundation:</p>
+
+<ul>
+  <li><b>Memory safety at the compiler level.</b> Rust rules out at build time whole
+      classes of bugs — out-of-bounds access, use-after-free, data races — that cause
+      the majority of vulnerabilities in system software. For an operating-system
+      kernel, where such a bug means the whole machine is compromised, this is a
+      fundamental advantage over classic C kernels.</li>
+  <li><b>A compiler bug was found.</b> During development, data structures began to
+      corrupt silently — but only sometimes, and in a way neither code review nor
+      ordinary tests caught. Using hardware watchpoint debugging, the cause was
+      traced to a single mis-compiled instruction sequence in
+      <tt>rustc&nbsp;1.97.0</tt>. It matches the public issue
+      <a href="https://github.com/rust-lang/rust/issues/159035">rust-lang/rust#159035</a>.
+      That level of diagnosis speaks to the engineering depth of the project.</li>
+  <li><b>Verification on the real kernel.</b> Every feature is confirmed by booting
+      the actual kernel and checking its output, not only by testing functions in
+      isolation.</li>
+</ul>
+
+<h2 id="market">Applications and market</h2>
+
+<p>The kernel is designed as a <b>universal foundation</b> for a software ecosystem.
+The first product on top of it is a desktop operating system: a workstation that,
+from the kernel up to the applications, is entirely under control and independent of
+foreign platforms.</p>
+
+<p>Against the backdrop of migration to domestic software, demand for such solutions
+is forming in the public sector, in industry and in education. A kernel written in a
+safe language and fully open is a foundation on which application software can be
+built without reliance on other parties' licences or backdoors.</p>
+
+<h2 id="roadmap">Roadmap</h2>
+
+<ul>
+  <li><span class="stage done">[done]</span> x86-64 kernel: processes, memory,
+      multi-core, filesystem, pipes and signals</li>
+  <li><span class="stage done">[done]</span> userspace program execution and an
+      interactive command shell</li>
+  <li><span class="stage wip">[in progress]</span> keyboard input and drivers for
+      basic devices</li>
+  <li><span class="stage plan">[planned]</span> graphical output and a windowing
+      environment</li>
+  <li><span class="stage plan">[planned]</span> networking and support for more
+      hardware</li>
+  <li><span class="stage plan">[planned]</span> a set of applications on top of the
+      system</li>
+</ul>
+
+<p><b>How the project earns.</b> Revenue is planned not from the operating system
+itself but from the software that runs on it. The first target is an office suite
+with built-in AI from domestic developers. The kernel remains the universal
+foundation around which an ecosystem of Russian software is built, and that is where
+the business model sits.</p>
+
+<h2 id="team">Team and organization</h2>
+
+<ul>
+  <li><b>Applicant organization:</b> ScioFuturum</li>
+  <li><b>Project lead:</b> Ilya Sergeevich Sutorma</li>
+  <li><b>Region:</b> Bryansk Oblast, Russia</li>
+  <li><b>Contact:</b> +7&nbsp;962&nbsp;144-50-52,
+      <a href="mailto:sciofuturum@tutamail.com">sciofuturum@tutamail.com</a></li>
+</ul>
+
+<h2 id="download">Download and build</h2>
+
+<p>Rumicos cross-compiles on Linux, macOS and Windows with a stable Rust toolchain.
+The kernel links with <tt>rust-lld</tt>, so no separate host C toolchain is needed.
+For now the system writes all of its output to the serial port (COM1) — the easiest
+way to run it is under QEMU.</p>
+
+<pre>rustup target add x86_64-unknown-none
+
+cargo build -p kernel --target x86_64-unknown-none --release   # build the kernel
+cargo xtask qemu-test                                          # boot it, check the output
+cargo test --workspace                                         # 277 automated tests</pre>
+
+<p>A ready-to-boot build and the source are in the
+<a href="https://github.com/ScioFuturum/rumicos">GitHub repository</a>.</p>
+
+<ul>
+  <li><a href="../downloads/rumicos-boot.zip">rumicos-boot.zip</a>
+      — bootable package: the Limine UEFI bootloader, the kernel and a startup
+      guide</li>
+  <li><a href="../downloads/kernel.elf">kernel.elf</a>
+      — just the kernel, for an existing Limine UEFI setup</li>
+</ul>
+
+<hr>
+<div id="footer">
+  Rumicos — <a href="https://github.com/ScioFuturum/rumicos">source on GitHub</a> —
+  <a href="../">Русская версия</a> — free software under the
+  <a href="https://github.com/ScioFuturum/rumicos/blob/main/LICENSE">GNU GPL v3</a>.
+</div>
+
+</div>
+</body>
+</html>

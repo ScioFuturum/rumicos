@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rumicos — an experimental x86-64 kernel in Rust</title>
-<meta name="description" content="Rumicos is an experimental x86-64 operating system kernel written in Rust (no_std). Download the ready-to-boot build or the source.">
+<title>Rumicos — операционная система на Rust</title>
+<meta name="description" content="Rumicos — операционная система для x86-64, написанная с нуля на Rust. Универсальное ядро как основа для отечественного программного обеспечения.">
 <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -12,121 +12,148 @@
 
 <div id="banner">
   <h1>Rumicos</h1>
-  <div class="sub">An experimental x86-64 operating system kernel, written in Rust.</div>
+  <div class="sub">Операционная система, написанная с нуля на Rust.</div>
 </div>
 
 <div id="nav">
-  <a href="#about">About</a> |
-  <a href="#download">Download</a> |
-  <a href="#build">Building</a> |
-  <a href="#miscompile">Compiler bug</a> |
-  <a href="#donate">Donate</a> |
+  <a href="#about">О проекте</a> |
+  <a href="#novelty">Новизна</a> |
+  <a href="#market">Применение</a> |
+  <a href="#roadmap">Дорожная карта</a> |
+  <a href="#team">Команда</a> |
+  <a href="#download">Скачать</a> |
   <a href="https://github.com/ScioFuturum/rumicos">GitHub</a> |
-  <a href="./ru/">Русский</a>
+  <a href="./en/">English</a>
 </div>
 
-<h2 id="about">About</h2>
+<h2 id="about">О проекте</h2>
 
-<p>Rumicos is a small, from-scratch Unix-like kernel for x86-64. It is written in
-Rust (<tt>no_std</tt>, no libc) and is booted by
-<a href="https://github.com/limine-bootloader/limine">Limine</a> over UEFI.
-It is a hobby and research project, not a production system.</p>
+<p>Rumicos — операционная система для компьютеров на архитектуре x86-64. Мы пишем её
+с нуля на языке Rust: без заимствования чужого ядра (Linux, BSD и подобных) и без
+стандартной библиотеки языка C. Ядро — это часть системы, которая распоряжается
+процессором, памятью и устройствами; на нём держится всё остальное. Мы делаем ядро
+универсальным, чтобы одна и та же основа годилась и для настольной системы, и для
+встраиваемых устройств. Первая цель — операционная система для обычных персональных
+компьютеров.</p>
 
-<p>Everything listed below is verified by booting the real kernel in QEMU, not only
-by unit tests. The current build passes <b>273</b> host tests and <b>19 of 19</b>
-live boot checks.</p>
+<p>Всё перечисленное ниже проверяется запуском настоящего ядра на виртуальной машине
+QEMU, а не только модульными тестами в отрыве от железа. Текущая сборка проходит
+<b>277</b> автоматических тестов и <b>30 из 30</b> проверок реальной загрузки.</p>
 
-<ul>
-  <li><b>Processes</b> — copy-on-write <tt>fork()</tt>, <tt>execve()</tt> loading real ELF
-      binaries, <tt>clone()</tt> (CLONE_VM threads)</li>
-  <li><b>Virtual memory</b> — 4-level paging, <tt>mmap</tt>/<tt>munmap</tt>, demand-zero and
-      file-backed pages, copy-on-write faults</li>
-  <li><b>Signals</b> — <tt>sigaction</tt>, <tt>kill</tt>, delivery on syscall and interrupt
-      return, a real <tt>sigreturn</tt> trampoline</li>
-  <li><b>SMP scheduler</b> — multi-core boot, multi-level feedback queue with work
-      stealing, cross-CPU TLB shootdown</li>
-  <li><b>Filesystem</b> — VFS layer with ramfs, devfs (<tt>/dev/null</tt>, <tt>zero</tt>,
-      <tt>serial</tt>), a page cache, CPIO initrd</li>
-  <li><b>IPC</b> — anonymous <tt>pipe()</tt> with blocking readers and writers,
-      <tt>dup()</tt>/<tt>dup2()</tt>, kernel futexes</li>
-  <li><b>Process lifecycle</b> — <tt>wait4()</tt>, zombie reaping, exit-status encoding,
-      SIGCHLD</li>
-</ul>
-
-<h2 id="download">Download</h2>
-
-<p>A compiled kernel, ready to boot. Rumicos writes all of its output to the
-<b>serial port (COM1)</b>, not to the screen — run it under QEMU, or on UEFI
-hardware with a serial console attached.</p>
+<p>Что уже работает:</p>
 
 <ul>
-  <li><a href="./downloads/rumicos-boot.zip">rumicos-boot.zip</a>
-      — bootable package: the Limine UEFI bootloader, <tt>limine.conf</tt>, the kernel
-      and an <tt>INSTALL.txt</tt> guide (about 200 KB)</li>
-  <li><a href="./downloads/kernel.elf">kernel.elf</a>
-      — just the kernel, for an existing Limine (or compatible) UEFI setup</li>
+  <li><b>Процессы</b> — создание процессов через <tt>fork()</tt> с копированием
+      памяти по мере записи, запуск программ через <tt>execve()</tt> из настоящих
+      исполняемых файлов, потоки (<tt>clone()</tt>)</li>
+  <li><b>Память</b> — четырёхуровневая трансляция адресов, выделение памяти
+      (<tt>mmap</tt>/<tt>munmap</tt>), подкачка страниц по требованию</li>
+  <li><b>Многоядерность</b> — запуск на нескольких ядрах процессора, планировщик с
+      приоритетами и перераспределением нагрузки между ядрами</li>
+  <li><b>Файловая система</b> — слой VFS, оперативная файловая система, устройства
+      (<tt>/dev</tt>), кэш страниц</li>
+  <li><b>Взаимодействие процессов</b> — каналы (<tt>pipe</tt>), сигналы, ожидание
+      завершения дочерних процессов</li>
+  <li><b>Командная оболочка</b> — интерактивный shell с конвейерами
+      (<tt>cmd1 | cmd2</tt>), перенаправлением ввода-вывода и запуском программ</li>
 </ul>
 
-<p>To try it, unpack the archive and run:</p>
+<h2 id="novelty">Научно-техническая новизна</h2>
 
-<pre>qemu-system-x86_64 -machine q35 -m 512M -serial stdio -display none \
-  -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd \
-  -drive format=raw,file=fat:rw:.</pre>
+<p>Rumicos — не «ещё одна сборка Linux». Отличие в самой основе:</p>
 
-<p>Full instructions, including booting on real hardware, are in the
-<tt>INSTALL.txt</tt> inside the archive.</p>
+<ul>
+  <li><b>Безопасность памяти на уровне компилятора.</b> Язык Rust отсекает ещё при
+      сборке целые классы ошибок — выход за границы массива, обращение к уже
+      освобождённой памяти, гонки данных, — из-за которых возникает большинство
+      уязвимостей в системном программном обеспечении. Для ядра операционной
+      системы, где такая ошибка означает полную компрометацию машины, это
+      принципиальное преимущество перед классическими ядрами на C.</li>
+  <li><b>Найдена ошибка в самом компиляторе.</b> В ходе разработки структуры данных
+      начали незаметно портиться — но не всегда и так, что ни ревью кода, ни обычные
+      тесты этого не ловили. С помощью отладки через аппаратные точки останова
+      причина была прослежена до одной ошибочно скомпилированной последовательности
+      инструкций в <tt>rustc&nbsp;1.97.0</tt>. Дефект совпадает с публично
+      зарегистрированной проблемой
+      <a href="https://github.com/rust-lang/rust/issues/159035">rust-lang/rust#159035</a>.
+      Такой уровень диагностики характеризует глубину инженерной проработки проекта.</li>
+  <li><b>Проверка на настоящем ядре.</b> Каждая возможность подтверждается загрузкой
+      реального ядра и разбором его вывода, а не только тестами отдельных функций.</li>
+</ul>
 
-<h2 id="build">Building from source</h2>
+<h2 id="market">Применение и рынок</h2>
 
-<p>Rumicos cross-compiles on Linux, macOS and Windows with a stable Rust toolchain.
-The kernel links with <tt>rust-lld</tt>, so no host C toolchain is required.</p>
+<p>Ядро задумано как <b>универсальная основа</b>, вокруг которой выстраивается
+программная экосистема. Первый продукт на его базе — операционная система для
+настольных компьютеров: рабочее место, которое целиком, от ядра до прикладных
+программ, находится под контролем и не зависит от иностранных платформ.</p>
+
+<p>На фоне задачи перехода на отечественное программное обеспечение спрос на такие
+решения формируется в государственном секторе, на промышленных предприятиях и в
+образовании. Ядро, написанное на безопасном языке и полностью открытое, — это
+фундамент, на который можно ставить прикладной софт без оглядки на чужие лицензии и
+закладки.</p>
+
+<h2 id="roadmap">Дорожная карта</h2>
+
+<ul>
+  <li><span class="stage done">[готово]</span> ядро x86-64: процессы, память,
+      многоядерность, файловая система, каналы и сигналы</li>
+  <li><span class="stage done">[готово]</span> запуск программ из пользовательского
+      пространства и интерактивная командная оболочка</li>
+  <li><span class="stage wip">[в работе]</span> ввод с клавиатуры и драйверы
+      базовых устройств</li>
+  <li><span class="stage plan">[план]</span> графический вывод и оконная среда</li>
+  <li><span class="stage plan">[план]</span> сеть и поддержка большего числа
+      оборудования</li>
+  <li><span class="stage plan">[план]</span> набор прикладных программ поверх
+      системы</li>
+</ul>
+
+<p><b>Как проект будет зарабатывать.</b> Доход планируется получать не с самой
+операционной системы, а с программного обеспечения, работающего на ней. Первый
+ориентир — офисный пакет со встроенным искусственным интеллектом от отечественных
+разработчиков. Ядро остаётся универсальной основой, вокруг которой выстраивается
+экосистема российского софта; на ней и строится модель дохода.</p>
+
+<h2 id="team">Команда и организация</h2>
+
+<ul>
+  <li><b>Организация-заявитель:</b> ScioFuturum</li>
+  <li><b>Руководитель проекта:</b> Суторьма Илья Сергеевич</li>
+  <li><b>Регион:</b> Брянская область</li>
+  <li><b>Контакты:</b> +7&nbsp;962&nbsp;144-50-52,
+      <a href="mailto:sciofuturum@tutamail.com">sciofuturum@tutamail.com</a></li>
+</ul>
+
+<h2 id="download">Скачать и собрать</h2>
+
+<p>Rumicos кросс-компилируется на Linux, macOS и Windows на стабильном компиляторе
+Rust. Ядро линкуется через <tt>rust-lld</tt>, поэтому отдельный C-тулчейн на хосте
+не нужен. Сейчас система выводит всё в последовательный порт (COM1) — запускать её
+удобнее всего в QEMU.</p>
 
 <pre>rustup target add x86_64-unknown-none
 
-cargo build -p kernel --target x86_64-unknown-none --release   # build the kernel
-cargo xtask qemu-test                                          # boot it, check serial output
-cargo test --workspace                                         # 273 host tests</pre>
+cargo build -p kernel --target x86_64-unknown-none --release   # собрать ядро
+cargo xtask qemu-test                                          # загрузить, проверить вывод
+cargo test --workspace                                         # 277 автоматических тестов</pre>
 
-<p>The source, documentation and engineering notes are in the
-<a href="https://github.com/ScioFuturum/rumicos">GitHub repository</a>.</p>
-
-<h2 id="miscompile">The compiler bug</h2>
-
-<p>Structures in the kernel were being corrupted silently — but only sometimes, and
-never in a way code review or ordinary tests would catch. Three separate times a
-field of a freshly copied struct came out with half of its bytes replaced by
-garbage.</p>
-
-<p>Using a custom gdbstub client with hardware watchpoints, each corruption was
-traced to one instruction sequence: an aggregate copy that
-<tt>rustc 1.97.0</tt> (LLVM 22.1.6) lowered into byte stores at stride-2 offsets,
-writing only the even bytes and leaving the odd ones as stale garbage.</p>
-
-<p>An isolated reproduction matrix and an assembly scanner pinned the trigger down
-to <tt>+sse*</tt> target features combined with this target's default
-<tt>+soft-float</tt>. The fix was a one-line build-flag change; the scanner now
-reports zero corrupted copies across the whole kernel. It matches the public
-issue <a href="https://github.com/rust-lang/rust/issues/159035">rust-lang/rust#159035</a>.
-The full write-up is in <tt>docs/miscompile-audit.md</tt> in the repository.</p>
-
-<h2 id="donate">Donate</h2>
-
-<p>Rumicos is free software (GPL-3.0-only). If it was useful or interesting to
-you, you can support the work:</p>
+<p>Готовая к загрузке сборка и исходный код — в
+<a href="https://github.com/ScioFuturum/rumicos">репозитории на GitHub</a>.</p>
 
 <ul>
-  <li>Bitcoin (BTC): <span class="addr">bc1qadr78tgcytn3hj6prvwaa6pmvxf699d8lpxaza</span></li>
-  <li>USDT (TRC-20): <span class="addr">TTXt5S1hZmDQp3yc1LC2zNLod7KVDKSJqZ</span></li>
+  <li><a href="./downloads/rumicos-boot.zip">rumicos-boot.zip</a>
+      — загрузочный пакет: UEFI-загрузчик Limine, ядро и инструкция по запуску</li>
+  <li><a href="./downloads/kernel.elf">kernel.elf</a>
+      — только ядро, для уже настроенной загрузки через Limine</li>
 </ul>
-
-<p>Please double-check the address after copying it, before sending anything.</p>
 
 <hr>
 <div id="footer">
-  Rumicos — <a href="https://github.com/ScioFuturum/rumicos">source on GitHub</a> —
-  <a href="./ru/">Русская версия</a> — free software under the
-  <a href="https://github.com/ScioFuturum/rumicos/blob/main/LICENSE">GNU GPL v3</a>,
-  with no warranty.
+  Rumicos — <a href="https://github.com/ScioFuturum/rumicos">исходный код на GitHub</a> —
+  <a href="./en/">English version</a> — свободное программное обеспечение под
+  <a href="https://github.com/ScioFuturum/rumicos/blob/main/LICENSE">GNU GPL v3</a>.
 </div>
 
 </div>

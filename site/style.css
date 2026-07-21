@@ -108,6 +108,19 @@ pre {
   word-break: break-all;
 }
 
+/* roadmap stage markers */
+.stage {
+  font-weight: bold;
+  font-size: 11px;
+}
+.stage.done { color: #007700; }
+.stage.wip  { color: #b36b00; }
+.stage.plan { color: #777777; }
+
+.lead {
+  color: #333333;
+}
+
 #footer {
   margin-top: 8px;
   padding-top: 8px;
