@@ -1,5 +1,13 @@
 # Part C — fair SMP scheduling: diagnosis (workaround retained)
 
+> **Reserved work — do not resume without a separate go-ahead.** Fair SMP
+> scheduling (removing the pinning, thread migration, work-stealing, and TLB
+> shootdown under real multi-core execution) is a distinct result to be funded
+> and delivered on its own. The pinning stays in place; `least_loaded_cpu`
+> spreading and AP timers are **not** to be re-enabled, and the migration
+> races below are **not** to be fixed, as part of ongoing work. This document
+> is the preserved diagnosis, not a task list to pick up now.
+
 **Outcome (per the checkpoint's C5 clause):** removing the CPU0 pinning
 reproduces a real, timing-dependent multi-CPU hang. The failure was diagnosed
 to a specific trigger and a small set of contended structures, but it is a
@@ -89,27 +97,32 @@ Ranked by the evidence (`[F]` reached, first reap marker not):
    silently does not enqueue the woken thread (a dropped wakeup). Under
    contention this can strand a thread; it is a latent second-order hazard even
    though it was not the observed first hang.
-4. **Pipe blocking read/write** carry the *same* check-then-block-across-two-
-   locks lost-wakeup shape Part A fixed for `wait4` (condition under the ring
-   lock, block under the wait-queue lock). Harmless while pinned; a real
-   lost-wakeup once `echo` and `cat` run on different CPUs. This explains the
-   shell-pipeline hang variant and should be fixed with the Part A primitive
-   (`thread_block_if`) before re-attempting Part C.
+4. **Pipe blocking read/write** carried the *same* check-then-block-across-
+   two-locks lost-wakeup shape Part A fixed for `wait4` (condition under the
+   ring lock, block under the wait-queue lock). Harmless while pinned; a real
+   lost-wakeup once `echo` and `cat` run on different CPUs — this explained the
+   shell-pipeline hang variant. **This one is now closed** (independently of
+   Part C, as pre-work): `pipe_read`, `pipe_write` and `keyboard_read` were
+   converted to `thread_block_if` with per-object generation counters, exactly
+   like the wait4 fix (commits `fs/pipe:` and `keyboard:`). So a future Part C
+   re-attempt starts with the lost-wakeup class already eliminated kernel-wide;
+   the remaining fronts are 1–3 above.
 
 ## Recommended next step
 
-Do Part C as its own checkpoint, bottom-up, each verified in isolation under
-`-smp 4`:
+When Part C is eventually funded as its own checkpoint, do it bottom-up, each
+step verified in isolation under `-smp 4`:
 
-1. Convert `pipe_read`/`pipe_write` (and `keyboard_read`) to `thread_block_if`
-   with a generation counter, exactly like the wait4 fix — removes the
-   lost-wakeup class kernel-wide.
+1. ~~Convert `pipe_read`/`pipe_write`/`keyboard_read` to `thread_block_if`.~~
+   **Done** as pre-work (see above) — the lost-wakeup class is already gone.
 2. Make `try_make_runnable` never drop a wakeup: on `try_lock` failure, fall
    back to a lock (or defer) rather than skipping the enqueue.
 3. Stress the TLB-shootdown path deliberately with threads pinned to *all*
    CPUs doing concurrent `munmap`/exit, and instrument the `remaining`
    spin-wait to catch a missed ACK; verify `SHOOTDOWN_SERIALIZE` ordering.
 4. Only then re-enable spreading + AP timers and run the existing boot.
+
+Steps 2–4 are the reserved work; step 1 is already merged.
 
 ## Status
 

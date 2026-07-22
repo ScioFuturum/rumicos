@@ -39,6 +39,8 @@ Two independent layers:
 
 The project additionally scans its own compiled binary for known-bad code generation patterns. This exists because three distinct compiler miscompilation bugs were found during development, each of which silently corrupted data and was only detectable by inspecting generated machine code — see `docs/miscompile-audit.md`.
 
+Current counts, the boot-regression coverage, and the negative controls that prove specific tests actually detect their target bug (e.g. disabling FPU save/restore flips a passing SSE test to a failing one) are recorded in [`docs/verification.md`](docs/verification.md).
+
 ## Building
 
 Requires a nightly Rust toolchain pinned by `rust-toolchain.toml`, plus NASM and a linker for the userspace binaries.
