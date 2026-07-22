@@ -127,6 +127,16 @@ static KBD_RING: SpinLock<KeyboardRing> = SpinLock::new(KeyboardRing::new());
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 static KBD_WAITERS: WaitQueue = WaitQueue::new();
 
+/// Generation counter bumped by the IRQ handler after a decoded byte is
+/// pushed into the ring (before waking), and re-checked under the
+/// `KBD_WAITERS` lock by [`keyboard_read`] via `thread_block_if`. This is
+/// what closes the lost-wakeup window: a byte that arrives between the
+/// reader's empty-check and its block decision changes the seq, so the
+/// under-lock re-check declines to block. Same construction as `sys_wait4`'s
+/// `child_exit_seq` and the pipe seqs.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+static KBD_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 // ─── PS/2 controller ports ─────────────────────────────────────────────────
 
 /// Data port (read a scancode, write a device command).
@@ -174,6 +184,10 @@ pub fn keyboard_irq_handler(_frame: &mut kernel_cpu::InterruptFrame, _vec: u8) {
     }; // ring lock dropped here, before any wake
 
     if produced {
+        // Publish the new byte to any about-to-block reader (bump KBD_SEQ)
+        // BEFORE waking, so its under-lock re-check in thread_block_if sees
+        // the arrival and does not sleep through it.
+        KBD_SEQ.fetch_add(1, core::sync::atomic::Ordering::Release);
         // IRQ-safe wake: marks one waiter runnable and enqueues it; never
         // calls schedule() from interrupt context (the next tick picks it up).
         kernel_sched::wake_one_from_irq(&KBD_WAITERS);
@@ -199,17 +213,29 @@ pub fn keyboard_read(buf: &mut [u8]) -> i64 {
             return 0;
         }
         loop {
+            // Sample the keystroke generation BEFORE inspecting the ring, so a
+            // scancode that arrives between the empty-check and the block
+            // decision changes KBD_SEQ and the under-lock re-check declines to
+            // block. Closes the lost-wakeup window that plain thread_block left
+            // open (same construction as pipe/wait4).
+            let seq = KBD_SEQ.load(core::sync::atomic::Ordering::Acquire);
             {
                 let mut ring = KBD_RING.lock();
                 if !ring.is_empty() {
                     return ring.pop_into(buf) as i64;
                 }
             } // drop the ring lock BEFORE blocking
-            // SAFETY: no lock is held here; the IRQ handler wakes this queue
-            // when a byte arrives. A lost wakeup at worst waits for the next
-            // keystroke — acceptable for human-speed input, and the same
-            // window pipe.rs's blocking reader accepts.
-            unsafe { kernel_sched::thread_block(&KBD_WAITERS) };
+            // Block only if no byte has been pushed since `seq`, re-checked
+            // under the KBD_WAITERS lock — the same lock the IRQ handler's
+            // wake_one_from_irq takes. thread_block_if disables interrupts
+            // before taking that lock, so the keyboard IRQ cannot fire on this
+            // CPU while it is held: no self-deadlock, and no lost wakeup.
+            // SAFETY: no lock held across the block; own syscall context.
+            unsafe {
+                kernel_sched::thread_block_if(&KBD_WAITERS, || {
+                    KBD_SEQ.load(core::sync::atomic::Ordering::Acquire) == seq
+                });
+            }
         }
     }
     #[cfg(not(target_os = "none"))]
@@ -469,5 +495,32 @@ mod tests {
     #[test]
     fn ring_size_is_a_documented_constant() {
         assert_eq!(KBD_RING_SIZE, 256);
+    }
+
+    // ── lost-wakeup fix: the keystroke generation counter ─────────────────
+    //
+    // The IRQ handler pushes a byte and bumps a seq before waking; keyboard_read
+    // samples the seq before checking the ring and, via thread_block_if,
+    // re-reads it under the KBD_WAITERS lock. As with pipe/wait4 the real race
+    // is unreachable under CPU0 pinning, so this tests the decision logic tied
+    // to the real ring op.
+    #[test]
+    fn read_block_predicate_flips_when_the_irq_pushes_a_byte() {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        let mut r = KeyboardRing::new();
+        let seq = AtomicU32::new(0);
+
+        // Reader samples the seq and finds the ring empty → about to block.
+        let snap = seq.load(Ordering::Acquire);
+        assert!(r.is_empty());
+        assert_eq!(seq.load(Ordering::Acquire), snap, "no keystroke yet → block");
+
+        // IRQ handler races in: decodes 'a' into the ring, then bumps the seq
+        // (its wake order).
+        assert!(r.feed(0x1E), "'a' make code buffers a byte");
+        seq.fetch_add(1, Ordering::Release);
+
+        // The reader's under-lock re-check now declines to block.
+        assert_ne!(seq.load(Ordering::Acquire), snap, "keystroke arrived → do NOT block");
     }
 }
