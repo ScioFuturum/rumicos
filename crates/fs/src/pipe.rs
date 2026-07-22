@@ -194,6 +194,17 @@ pub struct Pipe {
     ring: SpinLock<PipeRing>,
     read_waiters: WaitQueue,
     write_waiters: WaitQueue,
+    /// Generation counter for the read side: bumped (after the buffer change
+    /// is published, before `wake`) whenever a blocked or about-to-block
+    /// READER must re-check — a write that added data to an empty ring, or
+    /// the writer end closing. `pipe_read` samples it before inspecting the
+    /// ring and, via `thread_block_if`, re-reads it under the `read_waiters`
+    /// lock to close the lost-wakeup window. See the module docs / Part A.
+    read_seq: core::sync::atomic::AtomicU32,
+    /// Generation counter for the write side: bumped whenever a WRITER must
+    /// re-check — a read that freed space in a full ring, or the reader end
+    /// closing. Symmetric to `read_seq`.
+    write_seq: core::sync::atomic::AtomicU32,
     /// Physical address of the separate 4 KiB data frame.
     data_phys: u64,
     /// Direct-map VA of the read-end VNode (its refcount = open read fds).
@@ -251,6 +262,13 @@ fn pipe_read(vn: &VNode, buf: &mut [u8], _offset: u64) -> i64 {
         // written by sys_pipe; the direct map is live.
         let pipe = unsafe { &*((DMAP + vn.fs_data as usize) as *const Pipe) };
         loop {
+            // Sample the read-side generation BEFORE inspecting the ring, so a
+            // write (or a writer close) that races between the check below and
+            // the block decision changes read_seq and the under-lock re-check
+            // in thread_block_if declines to block. Closes the lost-wakeup
+            // window (same construction as sys_wait4's child_exit_seq).
+            let read_snap = pipe.read_seq.load(Ordering::Acquire);
+
             let (n, was_full) = {
                 let mut ring = pipe.ring.lock();
                 if ring.is_empty() {
@@ -266,7 +284,9 @@ fn pipe_read(vn: &VNode, buf: &mut [u8], _offset: u64) -> i64 {
             };
             if n > 0 {
                 if was_full {
-                    // Room freed — wake a blocked writer.
+                    // Room freed — publish it (bump write_seq) BEFORE waking, so
+                    // an about-to-block writer's under-lock re-check observes it.
+                    pipe.write_seq.fetch_add(1, Ordering::Release);
                     kernel_sched::wake_one(&pipe.write_waiters);
                 }
                 return n as i64;
@@ -277,9 +297,18 @@ fn pipe_read(vn: &VNode, buf: &mut [u8], _offset: u64) -> i64 {
             match reader_step_when_empty(writers > 0) {
                 ReaderStep::Return(v) => return v,
                 ReaderStep::Block => {
-                    // SAFETY: the ring lock was dropped above; no lock is held
-                    // across the block, per the wait4 invariant.
-                    unsafe { kernel_sched::thread_block(&pipe.read_waiters) };
+                    // Block only if no read-side event happened since read_snap.
+                    // The predicate is re-read UNDER the read_waiters lock — the
+                    // same lock pipe_write / pipe_write_release take to wake — so
+                    // a racing publisher is serialized against this decision and
+                    // no wakeup is lost. No buffer lock is held here; the closure
+                    // is a lock-free atomic load.
+                    // SAFETY: no lock held across the block; own syscall context.
+                    unsafe {
+                        kernel_sched::thread_block_if(&pipe.read_waiters, || {
+                            pipe.read_seq.load(Ordering::Acquire) == read_snap
+                        });
+                    }
                 }
             }
         }
@@ -305,6 +334,10 @@ fn pipe_write(vn: &VNode, buf: &[u8], _offset: u64) -> i64 {
             return EPIPE;
         }
         loop {
+            // Sample the write-side generation before inspecting the ring (see
+            // pipe_read for the rationale — this is the symmetric write side).
+            let write_snap = pipe.write_seq.load(Ordering::Acquire);
+
             let (n, was_empty) = {
                 let mut ring = pipe.ring.lock();
                 if ring.is_full() {
@@ -324,6 +357,8 @@ fn pipe_write(vn: &VNode, buf: &[u8], _offset: u64) -> i64 {
             };
             if n > 0 {
                 if was_empty {
+                    // Data now available — publish (bump read_seq) before waking.
+                    pipe.read_seq.fetch_add(1, Ordering::Release);
                     kernel_sched::wake_one(&pipe.read_waiters);
                 }
                 return n as i64;
@@ -334,8 +369,14 @@ fn pipe_write(vn: &VNode, buf: &[u8], _offset: u64) -> i64 {
             match writer_step_when_full(readers > 0) {
                 WriterStep::Return(v) => return v,
                 WriterStep::Block => {
-                    // SAFETY: ring lock dropped above; no lock held across block.
-                    unsafe { kernel_sched::thread_block(&pipe.write_waiters) };
+                    // Block only if no write-side event happened since
+                    // write_snap, re-checked under the write_waiters lock.
+                    // SAFETY: no lock held across the block; own syscall context.
+                    unsafe {
+                        kernel_sched::thread_block_if(&pipe.write_waiters, || {
+                            pipe.write_seq.load(Ordering::Acquire) == write_snap
+                        });
+                    }
                 }
             }
         }
@@ -360,6 +401,9 @@ fn pipe_read_release(vn: *mut VNode) {
             // SAFETY: fs_data is this pipe's control frame; still live (the
             // write end keeps the control/data frames referenced).
             let pipe = unsafe { &*((DMAP + v.fs_data as usize) as *const Pipe) };
+            // dec_ref (above) published readers==0; bump write_seq before the
+            // wake so an about-to-block writer's re-check sees the close.
+            pipe.write_seq.fetch_add(1, Ordering::Release);
             kernel_sched::wake_all(&pipe.write_waiters);
         }
     }
@@ -376,6 +420,9 @@ fn pipe_write_release(vn: *mut VNode) {
             // Last writer gone: wake every blocked reader so it observes EOF.
             // SAFETY: as above.
             let pipe = unsafe { &*((DMAP + v.fs_data as usize) as *const Pipe) };
+            // dec_ref (above) published writers==0; bump read_seq before the
+            // wake so an about-to-block reader's re-check sees the close.
+            pipe.read_seq.fetch_add(1, Ordering::Release);
             kernel_sched::wake_all(&pipe.read_waiters);
         }
     }
@@ -410,6 +457,8 @@ pub fn sys_pipe(fds_ptr: u64) -> i64 {
                 ring: SpinLock::new(PipeRing::new()),
                 read_waiters: WaitQueue::new(),
                 write_waiters: WaitQueue::new(),
+                read_seq: core::sync::atomic::AtomicU32::new(0),
+                write_seq: core::sync::atomic::AtomicU32::new(0),
                 data_phys,
                 read_vn: read_vn as u64,
                 write_vn: write_vn as u64,
@@ -585,5 +634,73 @@ mod tests {
         let mut rbuf = [0u8; 4];
         assert_eq!(pipe_read_bad(&dummy, &mut rbuf, 0), EBADF);
         assert_eq!(pipe_write_bad(&dummy, b"x", 0), EBADF);
+    }
+
+    // ── lost-wakeup fix: the read/write generation counters ───────────────
+    //
+    // The real race needs two CPUs and is unreachable while threads are
+    // pinned to CPU0 (same as the wait4 race), so these test the *decision
+    // logic* that closes the window, tied to the real ring operation: a
+    // reader/writer samples the seq before checking the ring; the peer
+    // publishes into the ring and bumps the seq (waker order); the under-lock
+    // re-check `thread_block_if` performs then declines to block.
+
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn read_block_predicate_flips_when_a_write_publishes_into_empty_ring() {
+        let mut data = [0u8; PIPE_BUF_SIZE];
+        let mut ring = PipeRing::new();
+        let read_seq = AtomicU32::new(0);
+
+        // Reader samples the seq and finds the ring empty → about to block.
+        let snap = read_seq.load(Ordering::Acquire);
+        assert!(ring.is_empty());
+        assert_eq!(read_seq.load(Ordering::Acquire), snap, "no event yet → block");
+
+        // Writer races in: publishes a byte, then (was_empty) bumps read_seq,
+        // exactly pipe_write's order.
+        assert!(ring.write_from(&mut data, b"x") > 0);
+        read_seq.fetch_add(1, Ordering::Release);
+
+        // The reader's under-lock re-check now declines to block: it loops and
+        // reads the byte instead of sleeping through the wakeup.
+        assert_ne!(read_seq.load(Ordering::Acquire), snap, "publish → do NOT block");
+    }
+
+    #[test]
+    fn write_block_predicate_flips_when_a_read_frees_space_in_full_ring() {
+        let mut data = [0u8; PIPE_BUF_SIZE];
+        let mut ring = PipeRing::new();
+        let big = [0u8; PIPE_BUF_SIZE];
+        assert_eq!(ring.write_from(&mut data, &big), PIPE_BUF_SIZE);
+        assert!(ring.is_full());
+        let write_seq = AtomicU32::new(0);
+
+        // Writer samples the seq and finds the ring full → about to block.
+        let snap = write_seq.load(Ordering::Acquire);
+        assert_eq!(write_seq.load(Ordering::Acquire), snap, "no event yet → block");
+
+        // Reader races in: frees space, then (was_full) bumps write_seq.
+        let mut sink = [0u8; 4];
+        assert!(ring.read_into(&data, &mut sink) > 0);
+        write_seq.fetch_add(1, Ordering::Release);
+
+        assert_ne!(write_seq.load(Ordering::Acquire), snap, "space freed → do NOT block");
+    }
+
+    #[test]
+    fn close_side_bump_forces_the_blocked_end_to_recheck() {
+        // Writer-close bumps read_seq (readers then observe EOF); reader-close
+        // bumps write_seq (writers then observe EPIPE). Model both.
+        let read_seq = AtomicU32::new(0);
+        let write_seq = AtomicU32::new(0);
+        let r0 = read_seq.load(Ordering::Acquire);
+        let w0 = write_seq.load(Ordering::Acquire);
+        // pipe_write_release / pipe_read_release each bump their side.
+        read_seq.fetch_add(1, Ordering::Release);
+        write_seq.fetch_add(1, Ordering::Release);
+        assert_ne!(read_seq.load(Ordering::Acquire), r0, "writer close → reader rechecks (EOF)");
+        assert_ne!(write_seq.load(Ordering::Acquire), w0, "reader close → writer rechecks (EPIPE)");
     }
 }
